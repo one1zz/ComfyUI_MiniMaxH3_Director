@@ -501,6 +501,7 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
     clear_vram_between_segments: "widget.clearVram",
     clear_vram_before_refine: "widget.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.clearVramBeforeFaceRefine",
+    precise_segment_memory: "widget.preciseSegMem",
     export_source_images: "widget.exportSourceImages",
     export_pre_face_refine: "widget.exportPreFaceRefine",
     control_after_generate: "widget.controlAfterGenerate",
@@ -511,6 +512,7 @@ const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
     clear_vram_before_refine: "widget.tooltip.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.tooltip.clearVramBeforeFaceRefine",
+    precise_segment_memory: "widget.tooltip.preciseSegMem",
     export_source_images: "widget.tooltip.exportSourceImages",
     export_pre_face_refine: "widget.tooltip.exportPreFaceRefine",
 };
@@ -1652,6 +1654,7 @@ function moveDirectorDomWidgetToEnd(node) {
 const PERF_WIDGET_ORDER = [
     "bd_grp_perf",
     "clear_vram_between_segments",
+    "precise_segment_memory",
     "clear_vram_before_refine",
     "clear_vram_before_face_refine",
 ];

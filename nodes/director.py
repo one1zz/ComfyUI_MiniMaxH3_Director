@@ -303,6 +303,7 @@ class MiniMaxH3Director:
         clear_vram_between_segments=True,
         clear_vram_before_refine=False,
         clear_vram_before_face_refine=False,
+        precise_segment_memory=True,
         export_source_images=False,
         export_pre_face_refine=False,
         **kwargs,
@@ -348,6 +349,7 @@ class MiniMaxH3Director:
                     clear_vram_before_refine=clear_vram_before_refine,
                     clear_vram_before_face_refine=clear_vram_before_face_refine,
                     export_pre_face_refine=export_pre_face_refine,
+                    precise_segment_memory=precise_segment_memory,
                 )
             )
 
