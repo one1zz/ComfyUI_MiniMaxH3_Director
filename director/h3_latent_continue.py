@@ -374,6 +374,18 @@ def _seam_min_from_latent(latent: dict) -> float:
     return clamp_seam_min_mask(SEAM_MIN_MASK if raw is None else raw)
 
 
+def _crop_mask_to_active_tile(mask):
+    """Crop a full-canvas mask to the spatial tile currently being sampled."""
+    try:
+        from .spatial_tiled_sampling import crop_to_active_tile
+    except Exception:
+        return mask
+    try:
+        return crop_to_active_tile(mask)
+    except Exception:
+        return mask
+
+
 class _PrefixRemask:
     def __init__(
         self,
@@ -473,13 +485,28 @@ class _PrefixRemask:
         mask = kwargs.get("denoise_mask")
         if sigma is None or not torch.is_tensor(mask) or mask.ndim != 5:
             return executor(*args, **kwargs)
-        if int(mask.shape[2]) < self.prefix_steps:
+        # Spatial tiling samples a tile, but this mask was unpacked from the
+        # full latent. Crop it to the active tile before the H3 forward does
+        # ``out[0] * denoise_mask`` (minimax/model.py).
+        mask = _crop_mask_to_active_tile(mask)
+        kwargs["denoise_mask"] = mask
+        # ``transformer_options`` is shared by reference; restore it afterwards.
+        restores = []
+        options = kwargs.get("transformer_options")
+        if isinstance(options, dict) and options.get("denoise_mask") is not None:
+            restores.append((options, "denoise_mask", options["denoise_mask"]))
+            options["denoise_mask"] = _crop_mask_to_active_tile(options["denoise_mask"])
+        try:
+            if int(mask.shape[2]) < self.prefix_steps:
+                return executor(*args, **kwargs)
+            weights = self._live_weights(sigma)
+            painted = self._quantize(_apply_video_prefix_weights(mask, weights))
+            kwargs["denoise_mask"] = painted
+            self.current_video_mask = painted[:, :1].contiguous()
             return executor(*args, **kwargs)
-        weights = self._live_weights(sigma)
-        painted = self._quantize(_apply_video_prefix_weights(mask, weights))
-        kwargs["denoise_mask"] = painted
-        self.current_video_mask = painted[:, :1].contiguous()
-        return executor(*args, **kwargs)
+        finally:
+            for holder, key, value in restores:
+                holder[key] = value
 
 
 def install_continue_prefix_remask(model, latent: dict, sigmas) -> Any:

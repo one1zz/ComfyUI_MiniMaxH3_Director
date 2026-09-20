@@ -119,6 +119,39 @@ def _crop_packed(packed, full_shapes, axis: str, start: int, end: int):
     return packed_out, tile_shapes, (pad_h, pad_w)
 
 
+# Spatial tile being sampled, published for the duration of one model forward.
+# The continuity remask runs inside the model forward (past the guider, which
+# drops the positional denoise_mask), so it reads this to crop the full-canvas
+# mask to the tile.
+_ACTIVE_TILE = None
+
+
+def set_active_tile(info) -> None:
+    global _ACTIVE_TILE
+    _ACTIVE_TILE = info
+
+
+def clear_active_tile() -> None:
+    global _ACTIVE_TILE
+    _ACTIVE_TILE = None
+
+
+def crop_to_active_tile(tensor):
+    """Crop a full-canvas video/mask to the tile currently being sampled.
+
+    Returns ``tensor`` unchanged when no tile is active or its canvas does not
+    match the generate canvas.
+    """
+    info = _ACTIVE_TILE
+    if info is None or not isinstance(tensor, torch.Tensor) or tensor.ndim != 5:
+        return tensor
+    if int(tensor.shape[-2]) != int(info["full_h"]) or int(tensor.shape[-1]) != int(info["full_w"]):
+        return tensor
+    cropped = _crop_spatial_5d(tensor, info["axis"], int(info["start"]), int(info["end"]))
+    cropped, _, _ = _pad_even_hw(cropped)
+    return cropped
+
+
 def _as_bcthw(tensor):
     if not isinstance(tensor, torch.Tensor):
         return None, False
@@ -472,9 +505,19 @@ def _tiled_model_call(
                 )
                 return _invoke_model(model_k, x, sigma, denoise_mask, call_kw)
             base.latent_shapes = tile_shapes
+            set_active_tile(
+                {
+                    "axis": axis,
+                    "start": ax_start,
+                    "end": ax_end,
+                    "full_h": full_h,
+                    "full_w": full_w,
+                }
+            )
             try:
                 pred = _invoke_model(model_k, tile_x, sigma, tile_mask, call_kw)
             finally:
+                clear_active_tile()
                 _restore_payloads(restorations)
                 base.latent_shapes = saved_shapes
                 model_k.latent_image = saved_latent_image
@@ -504,6 +547,7 @@ def _tiled_model_call(
             if device.type == "cuda":
                 torch.cuda.empty_cache()
     finally:
+        clear_active_tile()
         base.latent_shapes = saved_shapes
         model_k.latent_image = saved_latent_image
         model_k.noise = saved_noise
