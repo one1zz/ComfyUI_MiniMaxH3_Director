@@ -126,8 +126,6 @@ def director_perf_inputs() -> dict:
                 ]),
             },
         ),
-            },
-        ),
         "export_source_images": (
             "BOOLEAN",
             {
