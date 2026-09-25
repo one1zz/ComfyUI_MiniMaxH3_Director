@@ -1323,8 +1323,9 @@ def execute_director_plan_core(
             first_pass_gpu = None
         # Same-segment peak: first-pass UNET/VAE still resident when refine
         # starts. Optional unload (default off) frees that before upscale/sample.
+        # 显式开关按显存需求确定性执行，不参与「内存够就跳过」的自适应。
         if clear_vram_before_refine and run_refine:
-            cleanup_segment_vram(enabled=True, unload_models=True)
+            cleanup_segment_vram(enabled=True, unload_models=True, adaptive=False)
             reports.append(
                 f"Segment {ui_idx + 1}/{timeline_seg_total}: "
                 "VRAM cleanup between first pass and refine"
@@ -1507,7 +1508,8 @@ def execute_director_plan_core(
         pre_face_chunk = chunk
         if run_face_refine and not hold_after_first:
             if clear_vram_before_face_refine:
-                cleanup_segment_vram(enabled=True, unload_models=True)
+                # 同上：显式开关不参与自适应跳过。
+                cleanup_segment_vram(enabled=True, unload_models=True, adaptive=False)
                 reports.append(
                     f"Segment {ui_idx + 1}/{timeline_seg_total}: "
                     "VRAM cleanup before face refine"
