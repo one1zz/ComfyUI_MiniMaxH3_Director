@@ -248,6 +248,8 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 - [Comfy-Org / ComfyUI](https://github.com/Comfy-Org/ComfyUI) — 官方 MiniMax H3 支持
 - [MiniMax-AI](https://github.com/MiniMax-AI) — MiniMax H3 模型
 - [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) — 权重与文档
+- [bytedance/Bernini](https://github.com/bytedance/Bernini) — 官方 prompt 增强模板（`official_pe_templates` 逐字引用，Apache-2.0）
+- [Carasibana/ComfyUI-H3-FaceRefine](https://github.com/Carasibana/ComfyUI-H3-FaceRefine) — 脸部检测 / 裁剪 / 拼接实现参考（MIT，改编，见 `THIRD_PARTY_NOTICES.md`）
 - [NikoDemon80/ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context) — 段间运动/音频续拍思路参考
 - [LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler) — H3 3D latent 放大架构与权重格式参考
 - [slmonker/selflift-Avatar](https://github.com/slmonker/selflift-Avatar) — SelfLift 渐进一采思路参考

@@ -28,6 +28,7 @@ Repository: [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/Comf
 | **SelfLift (progressive first pass)** | Wire **MiniMax H3 Director SelfLift** into Director `selflift` (above Refine). Unconnected = original single-stage first pass. Connected = low-res prefix + 3D lift + high-res tail on the Director canvas. Euler only. **Thanks to [slmonker/selflift-Avatar](https://github.com/slmonker/selflift-Avatar) for the implementation approach** |
 | **Refine / upscale** | Wire **MiniMax H3 Director Refine** into Director `refine`. Unconnected = original single-pass sampling. `refine` = same-resolution second sample; `upscale` = enlarge to a target canvas then SIGMAS sample (pixel / RTX VSR / H3 latent); `latent_upscale` = H3 latent enlarge only, no second sample. `passes` repeats refine (upscale once). Optional `refine_model` swaps the second-pass UNET. `images` is the refined clip; `images_pre_refine` is the first pass (before upscale) |
 | **Run report** | `report` output with plan and per-segment summary |
+| **Precise segment staging** | `precise_segment_memory` in the **Performance** group (on by default; needs Clear VRAM between segments). Keeps only the models the current phase actually uses, unloads the rest: encode → text encoder + both VAEs; sample → diffusion model (incl. refine / upscale nets) + video VAE; decode → both VAEs. Roles come straight from the node inputs. If every model fits in RAM anyway, nothing is unloaded. **See "VRAM / RAM scheduling" below** |
 | **Director pack I/O** | Toolbar **Import pack / Export pack**: zip of timeline JSON plus reference images/videos/audio. ASCII folders (`shared_params/`, `asset_groups/01/`, `Picture1`…) match the English UI and avoid path-encoding issues |
 
 Reference-audio slots can select an existing video or a local audio/video file. A video's first audio stream is extracted immediately to FLAC directly under `input/`; local source videos remain temporary and are not saved as video assets. Audio follows ComfyUI's existing upload rule: identical content with the same name is reused, while different content with the same name gets a numeric suffix without overwriting; the same resolved audio path is not added twice within one material group.
@@ -185,6 +186,27 @@ This repo ships examples under `example_workflows/`:
 
 Example: `example_workflows/minimax_h3_director_二采_加速.json`
 
+### VRAM / RAM scheduling
+
+Two toggles in the **Performance** group work together:
+
+| Toggle | Effect |
+|--------|--------|
+| `clear_vram_between_segments` (Clear VRAM between segments) | Unload models between segments. **Off disables precise staging below** |
+| `precise_segment_memory` (Precise segment staging, on by default) | With it on, unload by phase; off falls back to unloading every model each segment |
+
+**Why the old behavior hurts**: `unload_all_models()` also evicts models the *next* phase is about to use. That is free when both VRAM and RAM are roomy, but when everything does not fit in RAM the evicted weights spill to the page file and must be read back from disk next time — far slower than loading the model file directly. The cost repeats with every segment.
+
+**What precise staging does**: keep only the models the current phase needs and unload the rest. Roles come straight from the node inputs (`model` / `video_vae` / `audio_vae` / `clip`, plus Refine's `refine_model` / `upscale_model`) — no type guessing, no size heuristics:
+
+| Phase | Kept | May unload |
+|-------|------|------------|
+| Context encode | `clip`, `video_vae`, `audio_vae` | diffusion model, refine model, upscale net |
+| Sample / refine | diffusion model, refine model, upscale net, `video_vae` | `clip`, `audio_vae` |
+| Decode | `video_vae`, `audio_vae` | `clip`, diffusion model, refine model, upscale net |
+
+**Adaptive**: if every model in the run fits within 65% of physical RAM, nothing is unloaded at all — on big-RAM machines unloading only causes extra disk reads. The prefetch-queue cleanup still runs at every segment boundary regardless.
+
 ### External multi-group wiring
 
 Mirror the two official conditioning nodes and feed **multi-group** batches into the Director:
@@ -227,6 +249,8 @@ Mirror the two official conditioning nodes and feed **multi-group** batches into
 - [Comfy-Org / ComfyUI](https://github.com/Comfy-Org/ComfyUI) — official MiniMax H3 support
 - [MiniMax-AI](https://github.com/MiniMax-AI) — MiniMax H3 model
 - [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) — weights & docs
+- [bytedance/Bernini](https://github.com/bytedance/Bernini) — official prompt-enhancement templates (`official_pe_templates`, quoted verbatim, Apache-2.0)
+- [Carasibana/ComfyUI-H3-FaceRefine](https://github.com/Carasibana/ComfyUI-H3-FaceRefine) — face detect / crop / stitch implementation (MIT, adapted; see `THIRD_PARTY_NOTICES.md`)
 - [NikoDemon80/ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context) — inspiration for cross-segment motion/audio continuation
 - [LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler) — H3 3D latent upscaler architecture and checkpoint format
 - [slmonker/selflift-Avatar](https://github.com/slmonker/selflift-Avatar) — inspiration for SelfLift progressive first-pass sampling
