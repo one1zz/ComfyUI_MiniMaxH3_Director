@@ -12,6 +12,7 @@ Nothing here touches ComfyUI; the executor wires these helpers in.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Callable, Iterable, Sequence
 
 import torch
@@ -34,6 +35,12 @@ DEFAULT_RAMP_FRAMES = 1
 RECOVER_TAIL_MARGIN = 0  # extra safety: never recover fewer than this many frames
 
 MOTION_MODES = ("uniform", "adaptive")
+
+# Generated-audio recovery: splice holds back onto the real clock (default),
+# optional pitch-preserving time stretch, or off (generate audio is rejected).
+AUDIO_RECOVER_MODES = ("splice", "stretch", "off")
+DEFAULT_AUDIO_RECOVER = "splice"
+DEFAULT_AUDIO_FADE_MS = 2.0
 
 
 def _align(n: int) -> int:
@@ -389,6 +396,7 @@ def build_motion_plan(
         "peak_score": float(peak),
         "ack": str(motion_cfg.get("ack") or ""),
         "source_init_denoise": float(motion_cfg.get("source_init_denoise") or 0.0),
+        "audio_recover": str(motion_cfg.get("audio_recover") or DEFAULT_AUDIO_RECOVER),
         "pin_window": dilation_pin_window(dilate),
         "pipeline": MOTION_PIPELINE_ID,
     }
@@ -413,6 +421,7 @@ def motion_meta_for_handoff(motion: dict[str, Any] | None, *, slowed_trim: int, 
         "slowed_sample": int(slowed_sample),
         "hold_map": [int(h) for h in motion.get("hold_map") or []],
         "pin_window": motion.get("pin_window"),
+        "audio_recover": str(motion.get("audio_recover") or DEFAULT_AUDIO_RECOVER),
     }
 
 
@@ -451,6 +460,126 @@ def apply_source_init_latent(latent: dict, *, vae, clip: torch.Tensor) -> dict:
     out.pop("noise_mask", None)
     out["samples"] = _repack_av_streams(streams, latent)
     return out
+
+
+def _audio_fade_window(length: int, fade: int, device, dtype) -> torch.Tensor:
+    win = torch.ones(int(length), device=device, dtype=dtype)
+    f = int(fade)
+    if f > 0 and int(length) >= 2 * f:
+        ramp = 0.5 - 0.5 * torch.cos(
+            math.pi * torch.arange(1, f + 1, device=device, dtype=dtype) / float(f)
+        )
+        win[:f] = ramp
+        win[-f:] = ramp.flip(0)
+    return win
+
+
+def _try_time_stretch(
+    wave: torch.Tensor, *, factor: float, target_len: int
+) -> torch.Tensor | None:
+    """Pitch-preserving compression via torchaudio phase vocoder (best effort)."""
+    try:
+        import torchaudio
+
+        x = wave.reshape(-1, int(wave.shape[-1]))
+        n_fft, hop = 1024, 256
+        spec = torch.stft(x, n_fft=n_fft, hop_length=hop, return_complex=True)
+        rate = 1.0 / max(1e-6, float(factor))  # >1 speeds up
+        stretch = torchaudio.transforms.TimeStretch(
+            hop_length=hop, n_freq=int(spec.shape[1]), fixed_rate=rate
+        )
+        out = torch.istft(
+            stretch(spec), n_fft=n_fft, hop_length=hop, length=int(target_len)
+        )
+        if int(out.shape[-1]) < int(target_len):
+            out = torch.nn.functional.pad(out, (0, int(target_len) - int(out.shape[-1])))
+        out = out[..., : int(target_len)]
+        return out.reshape(*wave.shape[:-1], int(target_len)).to(
+            device=wave.device, dtype=wave.dtype
+        )
+    except Exception as exc:
+        log.info("motion fix: audio stretch unavailable (%s); using splice.", exc)
+        return None
+
+
+def recover_held_audio(
+    audio: dict | None,
+    hold_map: Sequence[int],
+    *,
+    trim_slowed: int = 0,
+    real_frames: int,
+    fps: float = 24.0,
+    mode: str = DEFAULT_AUDIO_RECOVER,
+    fade_ms: float = DEFAULT_AUDIO_FADE_MS,
+) -> dict | None:
+    """Collapse slowed generated audio back onto the real frame clock.
+
+    ``splice`` keeps one real-frame-long chunk from the first frame of every
+    hold group (2 ms fades at the joins); ``stretch`` time-compresses the whole
+    slowed waveform (pitch preserving, torchaudio); ``off`` returns None.
+    """
+    if mode == "off" or not isinstance(audio, dict):
+        return None
+    wave = audio.get("waveform")
+    if not torch.is_tensor(wave) or wave.numel() <= 0:
+        return None
+    holds = [max(1, int(h)) for h in hold_map]
+    real = int(real_frames)
+    if not holds or real <= 0:
+        return None
+    sr = int(audio.get("sample_rate") or 32000)
+    fps = float(fps or 24.0)
+    wave = wave.detach().float()
+    if wave.ndim == 1:
+        wave = wave.unsqueeze(0)
+    if wave.ndim == 2:
+        wave = wave.unsqueeze(0)
+    drop = max(0, int(round(float(trim_slowed) / fps * sr))) if trim_slowed else 0
+    if drop > 0:
+        wave = wave[..., drop:] if int(wave.shape[-1]) > drop else wave[..., :0]
+    target = max(1, int(round(real / fps * sr)))
+    mode = str(mode or DEFAULT_AUDIO_RECOVER).strip().lower()
+    if mode not in AUDIO_RECOVER_MODES:
+        mode = DEFAULT_AUDIO_RECOVER
+    if mode == "stretch":
+        slowed_total = max(1, hold_map_total(holds[:real]))
+        stretched = _try_time_stretch(
+            wave, factor=float(real) / float(slowed_total), target_len=target
+        )
+        if stretched is not None:
+            return {"waveform": stretched, "sample_rate": sr}
+    fade = max(0, int(round(max(0.0, float(fade_ms)) / 1000.0 * sr)))
+    out = wave.new_zeros((*wave.shape[:-1], target))
+    cum_slowed = 0
+    pos = 0
+    for i in range(real):
+        hold = holds[i] if i < len(holds) else holds[-1]
+        start = int(round(cum_slowed / fps * sr))
+        length = int(round((i + 1) / fps * sr)) - int(round(i / fps * sr))
+        if length <= 0:
+            cum_slowed += hold
+            continue
+        chunk = wave[..., start : start + length]
+        if int(chunk.shape[-1]) < length:
+            chunk = torch.cat(
+                [
+                    chunk,
+                    wave.new_zeros((*wave.shape[:-1], length - int(chunk.shape[-1]))),
+                ],
+                dim=-1,
+            )
+        elif int(chunk.shape[-1]) > length:
+            chunk = chunk[..., :length]
+        if fade > 0 and length >= 2 * fade:
+            chunk = chunk * _audio_fade_window(length, fade, wave.device, wave.dtype)
+        end = min(target, pos + length)
+        if end > pos:
+            out[..., pos:end] = chunk[..., : end - pos]
+        pos += length
+        cum_slowed += hold
+        if pos >= target:
+            break
+    return {"waveform": out, "sample_rate": sr}
 
 
 def plan_length_audit(

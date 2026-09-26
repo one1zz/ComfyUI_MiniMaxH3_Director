@@ -20,6 +20,10 @@ from ..director.motion_pack import (
     pack_motion,
     supported_dilations,
 )
+from ..director.motion_retime import (
+    AUDIO_RECOVER_MODES,
+    DEFAULT_AUDIO_RECOVER,
+)
 
 _CATEGORY = "MiniMaxH3"
 
@@ -74,6 +78,18 @@ class MiniMaxH3DirectorMotionFix:
                 ),
             },
             "optional": {
+                "audio_recover": (
+                    list(AUDIO_RECOVER_MODES),
+                    {
+                        "default": DEFAULT_AUDIO_RECOVER,
+                        "tooltip": (
+                            "生成声音如何恢复正常速度（仅当声音=生成时生效）。"
+                            "splice：按 hold 组首帧采样级拼回实时，接缝 2ms 淡化，保瞬态；"
+                            "stretch：整体变速不变调（torchaudio 相位声码器，可能略糊）；"
+                            "off：生成声音 + 动作修复无法保证音画同步，直接终止报错。"
+                        ),
+                    },
+                ),
                 "gate_abs": (
                     "FLOAT",
                     {
@@ -151,6 +167,7 @@ class MiniMaxH3DirectorMotionFix:
         mode="uniform",
         dilate=2,
         source_init_denoise=DEFAULT_SOURCE_INIT_DENOISE,
+        audio_recover=DEFAULT_AUDIO_RECOVER,
         gate_abs=2.0,
         gate_rel=0.35,
         bridge=2,
@@ -166,6 +183,7 @@ class MiniMaxH3DirectorMotionFix:
                 mode=mode,
                 dilate=dilate,
                 source_init_denoise=source_init_denoise,
+                audio_recover=audio_recover,
                 gate_abs=gate_abs,
                 gate_rel=gate_rel,
                 bridge=bridge,

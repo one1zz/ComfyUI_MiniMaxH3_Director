@@ -137,6 +137,7 @@ def apply_latent_continue(
     audio_vae=None,
     audio_context_length: int | None = None,
     seam_min_mask: float | None = None,
+    audio_context_latent: dict | None = None,
 ) -> tuple[dict, int, int]:
     """Copy prev AV tail into ``latent`` samples + noise_mask. No conditioning edits.
 
@@ -154,7 +155,10 @@ def apply_latent_continue(
     height = int(video.shape[3]) * 16
     frame_count = pixel_frames_for_latent_t(int(video.shape[2]))
 
-    pin_audio_latent = prev_av
+    # Motion fix: video may come from decoded pixels while audio still slices the
+    # previous slowed AV latent (see apply_motion_context).
+    audio_latent_explicit = audio_context_latent is not None
+    pin_audio_latent = audio_context_latent if audio_latent_explicit else prev_av
     if prev_av is not None:
         src = video_from_latent(prev_av)
         src_w, src_h = int(src.shape[4]) * 16, int(src.shape[3]) * 16
@@ -242,7 +246,11 @@ def apply_latent_continue(
         a_frames = int(audio_context_length) if audio_context_length else DEFAULT_AUDIO_CONTEXT_FRAMES
         if a_frames <= 0:
             a_frames = int(span)
-        audio_end_limit = pin_end_px if pin_end_px is not None else context_end_frame
+        audio_end_limit = (
+            None
+            if audio_latent_explicit
+            else (pin_end_px if pin_end_px is not None else context_end_frame)
+        )
         if pin_audio_latent is not None:
             audio_tail, audio_pin_t, _overhang = _audio_tail_from_latent(
                 pin_audio_latent, a_frames, end_frame=audio_end_limit

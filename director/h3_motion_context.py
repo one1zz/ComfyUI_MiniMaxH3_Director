@@ -473,6 +473,7 @@ def apply_motion_context(
     keep_existing_keyframes: bool = True,
     context_end_frame: int | None = None,
     audio_context_length: int | None = None,
+    audio_context_latent: dict | None = None,
 ) -> tuple[Any, int, int]:
     """Inject previous-segment motion (and optional audio) into conditioning.
 
@@ -510,7 +511,10 @@ def apply_motion_context(
     height = int(video.shape[3]) * 16
     frame_count = pixel_frames_for_latent_t(int(video.shape[2]))
 
-    pin_audio_latent = context_latent
+    # Cross-timebase pins (motion fix) may take video from decoded pixels while
+    # audio still slices the previous *slowed* AV latent, so keep them separate.
+    audio_latent_explicit = audio_context_latent is not None
+    pin_audio_latent = audio_context_latent if audio_latent_explicit else context_latent
     if context_latent is not None:
         src = video_from_latent(context_latent)
         src_w, src_h = int(src.shape[4]) * 16, int(src.shape[3]) * 16
@@ -635,7 +639,11 @@ def apply_motion_context(
         # Official: audio window independent; 0 follows video span. Example WF uses 24.
         a_frames = int(audio_ctx) if audio_ctx > 0 else int(span)
         # Align audio pin end with the video pin window (not export overshoot).
-        audio_end_limit = pin_end_px if pin_end_px is not None else context_end_frame
+        audio_end_limit = (
+            None
+            if audio_latent_explicit
+            else (pin_end_px if pin_end_px is not None else context_end_frame)
+        )
         if pin_audio_latent is not None:
             audio_latent, ref_audio_t, overhang = _audio_tail_from_latent(
                 pin_audio_latent, a_frames, end_frame=audio_end_limit

@@ -135,6 +135,10 @@ const HANDLE_PX = 14;
 const RUN_CHECK_SIZE = 14;
 const RUN_CHECK_HIT_PAD_X = 8;
 const RUN_CHECK_HIT_PAD_Y = 4;
+/** Canvas-drawn 动作修复 badge on each v2v/rv2v clip (global + segment modes). */
+const MOTION_BADGE_W = 24;
+const MOTION_BADGE_H = 14;
+const MOTION_BADGE_HIT_PAD = 5;
 /** Canvas-drawn 段间引导 marker at a clip joint (only when master switch is on). */
 const CONT_JOINT_W = 22;
 const CONT_JOINT_H = 16;
@@ -3022,6 +3026,11 @@ class MiniMaxH3DirectorEditor {
                         <button type="button" class="bd-btn bd-r2v-common-toggle" data-r="r2v-common-toggle" data-i18n="panel.r2vCommonEnable">启用公共参数</button>
                     </div>
                 </div>
+                <div class="bd-gen-fc-row hidden" data-r="global-motion-row" style="gap:10px;align-items:center;padding:4px 0 2px">
+                    <span class="bd-label" data-r="global-motion-label" data-i18n="panel.segmentMotion">本段动作修复</span>
+                    <label class="bd-seg-continuity"><input type="checkbox" data-r="global-motion-cb"><span data-i18n="batch.motionFix">动作修复</span></label>
+                    <label class="bd-seg-continuity"><span data-i18n="batch.motionDilate">倍率</span><input type="number" class="bd-num" data-r="global-motion-dilate" min="1" max="56" step="1" value="2" style="width:56px"></label>
+                </div>
                 <div class="bd-r2v-common-body" data-r="r2v-common-body">
                     <div class="bd-meta bd-r2v-common-hint hidden" data-r="r2v-common-hint" data-i18n="panel.r2vCommonHint">公共参考图/视频/音频供各组读取；公共提示词会与每组提示词拼接成完整提示词。同槽位以组内素材优先。</div>
                     <div class="bd-prompt-layout" data-r="global-prompt-layout">
@@ -3221,6 +3230,10 @@ class MiniMaxH3DirectorEditor {
         }
         this.globalTask = this.root.querySelector('[data-r="global-task"]');
         this.globalPanel = this.root.querySelector('[data-r="global-panel"]');
+        this.globalMotionRow = this.root.querySelector('[data-r="global-motion-row"]');
+        this.globalMotionLabel = this.root.querySelector('[data-r="global-motion-label"]');
+        this.globalMotionCb = this.root.querySelector('[data-r="global-motion-cb"]');
+        this.globalMotionDilate = this.root.querySelector('[data-r="global-motion-dilate"]');
         this.globalPanelTitle = this.globalPanel?.querySelector('[data-r="global-panel-title"]')
             || this.globalPanel?.querySelector("b");
         this.r2vCommonHead = this.root.querySelector('[data-r="r2v-common-head"]');
@@ -3674,6 +3687,33 @@ class MiniMaxH3DirectorEditor {
             this.segMotionDilate.addEventListener("keyup", (e) => e.stopPropagation());
             this.segMotionDilateWrap?.setAttribute("title", t("tooltip.segmentMotionDilate"));
         }
+        // Global / common-ref panel row: edits the selected segment's motion fix
+        // so global mode does not need the (hidden) segment panel.
+        if (this.globalMotionCb) {
+            this.globalMotionCb.onchange = () => {
+                const seg = this.timeline.segments?.[this.selectedIndex];
+                if (!seg) return;
+                seg.motionFix = !!this.globalMotionCb.checked;
+                this.commit(true);
+                this.syncGlobalMotionUI();
+            };
+            this.globalMotionRow?.setAttribute("title", t("tooltip.segmentMotion"));
+        }
+        if (this.globalMotionDilate) {
+            const applyGlobalMotionDilate = () => {
+                const seg = this.timeline.segments?.[this.selectedIndex];
+                if (!seg) return;
+                const n = Math.max(1, Math.min(56, parseInt(this.globalMotionDilate.value, 10) || 2));
+                seg.motionDilate = n;
+                this.globalMotionDilate.value = String(n);
+                this.commit(true);
+            };
+            this.globalMotionDilate.onchange = applyGlobalMotionDilate;
+            this.globalMotionDilate.oninput = applyGlobalMotionDilate;
+            this.globalMotionDilate.addEventListener("keydown", (e) => e.stopPropagation());
+            this.globalMotionDilate.addEventListener("keyup", (e) => e.stopPropagation());
+            this.globalMotionDilate.setAttribute("title", t("tooltip.segmentMotionDilate"));
+        }
 
         this.genGlobalImg?.addEventListener("click", (e) => { stopDomEvent(e); this.pickGenSrcImage(true); });
         this.genSegImg?.addEventListener("click", (e) => { stopDomEvent(e); this.pickGenSrcImage(false); });
@@ -3732,13 +3772,15 @@ class MiniMaxH3DirectorEditor {
             const { x, y } = this.getMousePos(e);
             const hit = this.hitTest(x, y);
             this.canvas.classList.remove("bd-grab");
-            if (hit?.type === "run-check" || hit?.type === "split" || hit?.type === "continuity-joint") {
+            if (hit?.type === "run-check" || hit?.type === "split" || hit?.type === "continuity-joint" || hit?.type === "motion-badge") {
                 this.canvas.style.cursor = "pointer";
                 if (hit.type === "continuity-joint") {
                     this.canvas.title = t(
                         hit.on ? "tooltip.continuityJointOn" : "tooltip.continuityJointOff",
                         { a: hit.a, b: hit.b },
                     );
+                } else if (hit.type === "motion-badge") {
+                    this.canvas.title = t("tooltip.motionBadge");
                 } else {
                     this.canvas.title = "";
                 }
@@ -6432,6 +6474,31 @@ class MiniMaxH3DirectorEditor {
         wrap.title = t("tooltip.segmentMotion");
     }
 
+    /** Global / common-ref panel: motion fix controls for the selected segment. */
+    syncGlobalMotionUI() {
+        const row = this.globalMotionRow;
+        if (!row) return;
+        const taskKey = this.getTaskKey?.() || "";
+        const segs = this.timeline?.segments || [];
+        const show = this.usesGlobalRefPanel()
+            && !this.isImageBatch() && !this.isFl2vMode()
+            && (taskKey === "v2v" || taskKey === "rv2v")
+            && segs.length >= 1;
+        row.classList.toggle("hidden", !show);
+        row.hidden = !show;
+        if (!show) return;
+        const idx = Math.min(this.selectedIndex ?? 0, segs.length - 1);
+        const seg = segs[idx];
+        if (this.globalMotionLabel) {
+            this.globalMotionLabel.textContent = t("panel.motionSegmentN", { n: idx + 1 });
+        }
+        if (this.globalMotionCb) this.globalMotionCb.checked = !!seg?.motionFix;
+        if (this.globalMotionDilate) {
+            const n = Math.max(1, Math.min(56, parseInt(seg?.motionDilate, 10) || 2));
+            this.globalMotionDilate.value = String(n);
+        }
+    }
+
     /** Per-segment「引用上段」on v2v/rv2v segment panel (index>0 + master on). */
     syncSegmentContinuityFromPrevUI() {
         const wrap = this.segContinuityFromPrevWrap;
@@ -8794,6 +8861,68 @@ class MiniMaxH3DirectorEditor {
         };
     }
 
+    /** v2v/rv2v timelines: draw the per-clip 动作修复 badge. */
+    _showsMotionBadges() {
+        const taskKey = this.getTaskKey?.() || "";
+        return !this.isImageBatch() && !this.isFl2vMode()
+            && (taskKey === "v2v" || taskKey === "rv2v")
+            && (this.timeline?.segments?.length || 0) >= 1;
+    }
+
+    _motionBadgeGeometry(seg, width) {
+        const x0 = this.frameToX(seg.start, width);
+        const shift = (this.isRunSelectEnabled() && this.getRunnableSegmentCount() >= 2)
+            ? RUN_CHECK_SIZE + 6 : 0;
+        const w = MOTION_BADGE_W, h = MOTION_BADGE_H;
+        const boxX = x0 + 5 + shift;
+        const boxY = TRACK_Y + 5;
+        return {
+            boxX,
+            boxY,
+            w,
+            h,
+            hitX0: boxX - MOTION_BADGE_HIT_PAD,
+            hitY0: boxY - MOTION_BADGE_HIT_PAD,
+            hitX1: boxX + w + MOTION_BADGE_HIT_PAD,
+            hitY1: boxY + h + MOTION_BADGE_HIT_PAD,
+        };
+    }
+
+    _drawMotionBadges(width, segs) {
+        if (!this._showsMotionBadges()) return;
+        const ctx = this.ctx;
+        for (const seg of segs) {
+            const g = this._motionBadgeGeometry(seg, width);
+            const on = !!seg.motionFix;
+            const d = Math.max(0, Math.min(56, parseInt(seg.motionDilate, 10) || 0));
+            ctx.save();
+            ctx.fillStyle = "#0e0e0e";
+            ctx.fillRect(g.boxX - 1, g.boxY - 1, g.w + 2, g.h + 2);
+            ctx.fillStyle = on ? "#3a2a1a" : "#1c1c1c";
+            ctx.strokeStyle = on ? "#ffb04f" : "#888";
+            ctx.lineWidth = 1;
+            ctx.fillRect(g.boxX, g.boxY, g.w, g.h);
+            ctx.strokeRect(g.boxX + 0.5, g.boxY + 0.5, g.w - 1, g.h - 1);
+            ctx.fillStyle = on ? "#ffb04f" : "#aaa";
+            ctx.font = "10px sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(on && d > 1 ? `动${d}` : "动", g.boxX + g.w / 2, g.boxY + g.h / 2 + 1);
+            ctx.restore();
+        }
+    }
+
+    toggleSegmentMotion(index) {
+        const seg = this.timeline.segments?.[index];
+        if (!seg) return;
+        seg.motionFix = !seg.motionFix;
+        if (this.selectedIndex !== index) this.selectedIndex = index;
+        this.commit(false, { syncTimeline: true });
+        this.syncSegmentMotionUI();
+        this.syncGlobalMotionUI();
+        this.scheduleRender();
+    }
+
     /** Master「段间引导」on + eligible task with ≥2 clips. */
     _showsContinuityJoints() {
         return isContinuityEligible(this) && isContinuityMasterEnabled(this.timeline?.output);
@@ -9066,6 +9195,16 @@ class MiniMaxH3DirectorEditor {
             }
         }
 
+        // 动作修复 badge wins over generic segment hits (top-left inside the clip).
+        if (this._showsMotionBadges() && y >= TRACK_Y && y <= trackBottom) {
+            for (let i = segs.length - 1; i >= 0; i--) {
+                const g = this._motionBadgeGeometry(segs[i], width);
+                if (x >= g.hitX0 && x <= g.hitX1 && y >= g.hitY0 && y <= g.hitY1) {
+                    return { type: "motion-badge", index: i };
+                }
+            }
+        }
+
         // Split markers: label band + full track height, before segment/edge hits.
         // (Previously label band returned null, so diamond clicks never registered.)
         if (y >= RULER_H && y <= trackBottom) {
@@ -9164,6 +9303,9 @@ class MiniMaxH3DirectorEditor {
             this._drag = null;
         } else if (hit.type === "continuity-joint") {
             this.toggleContinuityJoint(hit.rightIndex);
+            this._drag = null;
+        } else if (hit.type === "motion-badge") {
+            this.toggleSegmentMotion(hit.index);
             this._drag = null;
         } else if (hit.type === "split") {
             this.selectSplitFrame(hit.frame);
@@ -10677,6 +10819,7 @@ class MiniMaxH3DirectorEditor {
         }
 
         this._drawContinuityJoints(width, segs);
+        this._drawMotionBadges(width, segs);
 
         const phx = this.frameToX(this.currentFrame, width);
         this.ctx.strokeStyle = "#ff4444";
@@ -10831,6 +10974,7 @@ class MiniMaxH3DirectorEditor {
             if (this.genDefaultFc) this.genDefaultFc.value = defFc;
         }
 
+        this.syncGlobalMotionUI();
         if (this.usesGlobalRefPanel()) {
             this.syncSegmentRefImageSizeUI();
             return;

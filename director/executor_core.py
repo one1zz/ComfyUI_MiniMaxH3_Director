@@ -80,6 +80,7 @@ from .motion_pack import (
     resolve_motion_for_segment,
 )
 from .motion_retime import (
+    DEFAULT_AUDIO_RECOVER,
     apply_source_init_latent,
     build_motion_plan,
     expand_frames as expand_frames_with_holds,
@@ -87,6 +88,7 @@ from .motion_retime import (
     pin_window_for_available,
     plan_length_audit,
     recover_after_slowed_trim,
+    recover_held_audio,
 )
 from .segment_cache import (
     load_first_pass_av_latent,
@@ -199,6 +201,41 @@ def _trim_decoded_to_export(
             if int(wf.shape[-1]) > want:
                 audio_dict = {"waveform": wf[..., :want], "sample_rate": sr}
     return decoded, audio_dict
+
+
+def _motion_recover_audio_safe(
+    audio_dict: dict[str, Any] | None,
+    motion: dict[str, Any] | None,
+    *,
+    trim_slowed: int,
+    real_frames: int,
+    fps: float,
+    fail_fallback: bool = True,
+) -> tuple[dict[str, Any] | None, str]:
+    """Collapse slowed generated audio onto the real clock (splice/stretch)."""
+    if motion is None or not isinstance(audio_dict, dict):
+        return audio_dict, ""
+    wave = audio_dict.get("waveform")
+    if not torch.is_tensor(wave) or wave.numel() <= 0:
+        return audio_dict, ""
+    mode = str(motion.get("audio_recover") or DEFAULT_AUDIO_RECOVER)
+    try:
+        out = recover_held_audio(
+            audio_dict,
+            motion.get("hold_map") or [],
+            trim_slowed=int(trim_slowed),
+            real_frames=int(real_frames),
+            fps=float(fps),
+            mode=mode,
+        )
+    except Exception as exc:
+        if not fail_fallback:
+            raise
+        log.warning("Motion audio recovery failed (%s); keeping slowed decode.", exc)
+        return audio_dict, f"生成音频恢复失败（{exc}），保留放慢解码"
+    if out is None:
+        return audio_dict, ""
+    return out, f"生成音频恢复 {mode}"
 
 
 def _motion_recover_safe(
@@ -817,7 +854,8 @@ def execute_director_plan_core(
                         f"dilate={motion_plan['dilate']} gate={motion_plan['peak_score']:.2f} "
                         f"hot={motion_plan['hot_frames']}f "
                         f"→ slowed {motion_plan['slowed_frames']}f, "
-                        f"recover {real_target_len}f, init={motion_plan['source_init_denoise']:.2f}"
+                        f"recover {real_target_len}f, init={motion_plan['source_init_denoise']:.2f}, "
+                        f"audio={motion_plan.get('audio_recover') or DEFAULT_AUDIO_RECOVER}"
                     )
                 except Exception as exc:
                     motion_plan = None
@@ -825,6 +863,18 @@ def execute_director_plan_core(
                         raise
                     reports.append(
                         f"Seg #{seg.index + 1}: 动作修复准备失败（{exc}），本段按普通方式"
+                    )
+                # Generated audio cannot be left on the slowed clock: fail fast.
+                if (
+                    motion_plan is not None
+                    and decode_audio
+                    and str(motion_plan.get("audio_recover") or DEFAULT_AUDIO_RECOVER)
+                    == "off"
+                ):
+                    raise ValueError(
+                        "Motion Fix：声音=生成 且 audio_recover=off 无法保证音画同步，已终止。"
+                        "请把 Motion Fix 的音频恢复设为 splice（默认），"
+                        "或把声音改为「使用原声 / 静音」。"
                     )
         elif motion_cfg is not None and (clip_frames is None or int(clip_frames.shape[0]) <= 0):
             reports.append(
@@ -1193,6 +1243,7 @@ def execute_director_plan_core(
             pin_context_frames = prev_tail
             pin_context_length = context_n
             pin_context_end = prev_end_frame
+            pin_audio_context_latent = None
             if motion_plan is not None or prev_motion_meta is not None:
                 # Timebase conversion across a retimed boundary: pin from decoded
                 # pixels (re-encoded). Pin frames are never exported, so the VAE
@@ -1208,6 +1259,17 @@ def execute_director_plan_core(
                     else:
                         pin_context_frames = motion_pin_frames
                         pin_context_length = int(motion_pin_window)
+                        if decode_audio:
+                            # Generated audio must pin from the previous *slowed*
+                            # AV latent; a recovered real waveform would be d× fast.
+                            if prev_av is not None:
+                                pin_audio_context_latent = prev_av
+                            else:
+                                pin_audio = False
+                                reports.append(
+                                    f"Seg #{seg.index + 1}: 无上一段放慢 latent，"
+                                    "生成音频不钉入（视频照常钉入）"
+                                )
                 else:
                     if prev_tail is None or int(prev_tail.shape[0]) < 1:
                         use_motion_context = False
@@ -1216,10 +1278,14 @@ def execute_director_plan_core(
                         )
                     else:
                         pin_context_length = context_n
+                        # Current real-time + prev slowed: prev_audio is already
+                        # recovered real audio, so context_audio is correct.
                 if use_motion_context:
                     reports.append(
                         f"Seg #{seg.index + 1}: 时基转换钉入（重编码 "
-                        f"{pin_context_length}f）"
+                        f"{pin_context_length}f"
+                        + ("，生成音频切放慢 latent" if pin_audio_context_latent is not None else "")
+                        + "）"
                     )
             if use_motion_context and is_continue_mode(plan):
                 from .h3_latent_continue import (
@@ -1239,6 +1305,7 @@ def execute_director_plan_core(
                     audio_vae=audio_vae,
                     audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,
                     seam_min_mask=getattr(plan, "continuity_redraw", 0.10),
+                    audio_context_latent=pin_audio_context_latent,
                 )
                 after_shift = install_continue_prefix_remask
             elif use_motion_context:
@@ -1259,6 +1326,7 @@ def execute_director_plan_core(
                     keep_existing_keyframes=(seg.task_key == "fl2v"),
                     context_end_frame=pin_context_end,
                     audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,
+                    audio_context_latent=pin_audio_context_latent,
                 )
             # Phase-align can pin a few frames before the previous export end.
             # Drop that orphaned tail so concat does not replay it at the seam.
@@ -1710,6 +1778,21 @@ def execute_director_plan_core(
                             (motion_cfg or {}).get("fail_fallback", True)
                         ),
                     )
+                    if decode_audio:
+                        audio_p, audio_note = _motion_recover_audio_safe(
+                            audio_p,
+                            motion_plan,
+                            trim_slowed=trim_frames,
+                            real_frames=real_target_len,
+                            fps=float(plan.frame_rate or 24),
+                            fail_fallback=bool(
+                                (motion_cfg or {}).get("fail_fallback", True)
+                            ),
+                        )
+                        if audio_note:
+                            reports.append(
+                                f"Segment {ui_idx + 1}/{timeline_seg_total}: {audio_note}"
+                            )
                     decoded_p, audio_p = _trim_decoded_to_export(
                         decoded_p,
                         audio_p,
@@ -1813,6 +1896,19 @@ def execute_director_plan_core(
                 real_frames=real_target_len,
                 fail_fallback=bool((motion_cfg or {}).get("fail_fallback", True)),
             )
+            if decode_audio:
+                audio_dict, audio_note = _motion_recover_audio_safe(
+                    audio_dict,
+                    motion_plan,
+                    trim_slowed=trim_frames,
+                    real_frames=real_target_len,
+                    fps=float(plan.frame_rate or 24),
+                    fail_fallback=bool((motion_cfg or {}).get("fail_fallback", True)),
+                )
+                if audio_note:
+                    reports.append(
+                        f"Segment {ui_idx + 1}/{timeline_seg_total}: {audio_note}"
+                    )
             decoded, audio_dict = _trim_decoded_to_export(
                 decoded,
                 audio_dict,

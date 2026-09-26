@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import Any
 
 from .motion_retime import (
+    AUDIO_RECOVER_MODES,
+    DEFAULT_AUDIO_RECOVER,
     DEFAULT_BRIDGE_FRAMES,
     DEFAULT_DILATE,
     DEFAULT_GATE_ABS,
@@ -56,11 +58,17 @@ def clamp_dilate(raw: Any) -> int:
     return _clamp_int(raw, DEFAULT_DILATE, 1, MAX_DILATE)
 
 
+def _clamp_audio_recover(raw: Any) -> str:
+    mode = str(raw or DEFAULT_AUDIO_RECOVER).strip().lower()
+    return mode if mode in AUDIO_RECOVER_MODES else DEFAULT_AUDIO_RECOVER
+
+
 def pack_motion(
     *,
     mode: str = "uniform",
     dilate: int = DEFAULT_DILATE,
     source_init_denoise: float = DEFAULT_SOURCE_INIT_DENOISE,
+    audio_recover: str = DEFAULT_AUDIO_RECOVER,
     gate_abs: float = DEFAULT_GATE_ABS,
     gate_rel: float = DEFAULT_GATE_REL,
     bridge: int = DEFAULT_BRIDGE_FRAMES,
@@ -79,6 +87,7 @@ def pack_motion(
         "source_init_denoise": _clamp_float(
             source_init_denoise, DEFAULT_SOURCE_INIT_DENOISE, 0.0, MAX_SOURCE_INIT_DENOISE
         ),
+        "audio_recover": _clamp_audio_recover(audio_recover),
         "gate_abs": _clamp_float(gate_abs, DEFAULT_GATE_ABS, 0.0, 100.0),
         "gate_rel": _clamp_float(gate_rel, DEFAULT_GATE_REL, 0.0, 1.0),
         "bridge": _clamp_int(bridge, DEFAULT_BRIDGE_FRAMES, 0, 20),
@@ -111,6 +120,7 @@ def normalize_motion_pack(raw) -> dict[str, Any] | None:
             0.0,
             MAX_SOURCE_INIT_DENOISE,
         ),
+        "audio_recover": _clamp_audio_recover(raw.get("audio_recover")),
         "gate_abs": _clamp_float(raw.get("gate_abs"), DEFAULT_GATE_ABS, 0.0, 100.0),
         "gate_rel": _clamp_float(raw.get("gate_rel"), DEFAULT_GATE_REL, 0.0, 1.0),
         "bridge": _clamp_int(raw.get("bridge"), DEFAULT_BRIDGE_FRAMES, 0, 20),
@@ -169,6 +179,7 @@ def motion_fingerprint(plan, seg) -> dict[str, Any]:
         "motion_mode": cfg.get("mode") or "uniform",
         "motion_dilate": int(cfg.get("dilate") or 1),
         "motion_init_denoise": round(float(cfg.get("source_init_denoise") or 0.0), 4),
+        "motion_audio_recover": str(cfg.get("audio_recover") or DEFAULT_AUDIO_RECOVER),
         "motion_gate_abs": round(float(cfg.get("gate_abs") or 0.0), 4),
         "motion_gate_rel": round(float(cfg.get("gate_rel") or 0.0), 4),
         "motion_bridge": int(cfg.get("bridge") or 0),
@@ -195,7 +206,8 @@ def motion_report_line(plan, seg=None) -> str | None:
         ]
         return (
             f"Motion Fix: ON ({master.get('mode')}, dilate={d}, "
-            f"init denoise={float(master.get('source_init_denoise') or 0.0):.2f}) — "
+            f"init denoise={float(master.get('source_init_denoise') or 0.0):.2f}, "
+            f"audio={master.get('audio_recover') or DEFAULT_AUDIO_RECOVER}) — "
             f"segments {segs or 'none'}; {pin_note}"
         )
     cfg = resolve_motion_for_segment(plan, seg)
@@ -205,6 +217,7 @@ def motion_report_line(plan, seg=None) -> str | None:
     return (
         f"Seg #{int(seg.index) + 1} motion: dilate={d}, mode={cfg.get('mode')}, "
         f"init={float(cfg.get('source_init_denoise') or 0.0):.2f}, "
+        f"audio={cfg.get('audio_recover') or DEFAULT_AUDIO_RECOVER}, "
         f"window={dilation_pin_window(d) or 'hard-cut'}"
     )
 
