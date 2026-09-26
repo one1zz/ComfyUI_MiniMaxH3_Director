@@ -224,6 +224,8 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
     }
     if plan.continuity_enabled and bool(getattr(plan, "continuity_keep_tail", True)):
         payload["continuity_keep_tail"] = True
+    # Exact export changes per-segment export length (one-time cache refresh).
+    payload["exact_export"] = bool(getattr(plan, "exact_export", True))
     witness = getattr(plan, "external_groups_witness", None)
     if isinstance(witness, dict):
         # This segment's own group only. The whole chain is deliberately *not*
@@ -268,6 +270,9 @@ def first_pass_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[s
     from .semantic_bridge import semantic_bridge_fingerprint
 
     fp.update(semantic_bridge_fingerprint(plan))
+    from .motion_pack import motion_fingerprint
+
+    fp.update(motion_fingerprint(plan, seg))
     return fp
 
 
@@ -286,6 +291,9 @@ def segment_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str,
     from .semantic_bridge import semantic_bridge_fingerprint
 
     fp.update(semantic_bridge_fingerprint(plan))
+    from .motion_pack import motion_fingerprint
+
+    fp.update(motion_fingerprint(plan, seg))
     return fp
 
 
@@ -873,6 +881,10 @@ def _trim_stale_first_pass_frames(
     match_len: int | None,
 ) -> torch.Tensor | None:
     """Match in-memory first-pass export: drop context prefix, then crop length."""
+    if isinstance((handoff or {}).get("motion"), dict):
+        # Motion first-pass frames are slowed; the executor trims the slowed
+        # prefix and recovers group starts with the stored hold map.
+        return frames
     fps = float(getattr(plan, "frame_rate", 24) or 24)
     trim_frames = int((handoff or {}).get("trim_frames") or 0)
     export_len = int((handoff or {}).get("export_frames") or 0)

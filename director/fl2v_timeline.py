@@ -522,6 +522,9 @@ def build_fl2v_director_plan(
         SegmentRef,
         _parse_run_selection,
         _resolve_export_mode,
+        resolve_exact_export,
+        resolve_max_gap_frames,
+        resolve_segment_motion_fix,
     )
 
     global_block = timeline.get("global") or {}
@@ -690,6 +693,12 @@ def build_fl2v_director_plan(
                     shot if isinstance(shot, dict) else {},
                     segment_index=plan_index,
                 ),
+                motion_fix_enabled=resolve_segment_motion_fix(
+                    shot if isinstance(shot, dict) else {}
+                )[0],
+                motion_dilate=resolve_segment_motion_fix(
+                    shot if isinstance(shot, dict) else {}
+                )[1],
             )
         )
         plan_index += 1
@@ -751,4 +760,6 @@ def build_fl2v_director_plan(
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
+        exact_export=resolve_exact_export(timeline.get("output")),
+        max_gap_frames=resolve_max_gap_frames(timeline.get("output")),
     )

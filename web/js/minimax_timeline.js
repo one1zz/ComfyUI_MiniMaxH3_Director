@@ -3086,6 +3086,14 @@ class MiniMaxH3DirectorEditor {
                         <input type="checkbox" data-r="seg-continuity-from-prev">
                         <span data-i18n="batch.continuityFromPrev">引用上段</span>
                     </label>
+                    <label class="bd-seg-continuity hidden" data-r="seg-motion-wrap" hidden>
+                        <input type="checkbox" data-r="seg-motion">
+                        <span data-i18n="batch.motionFix">动作修复</span>
+                    </label>
+                    <label class="bd-seg-continuity hidden" data-r="seg-motion-dilate-wrap" hidden>
+                        <span data-i18n="batch.motionDilate">倍率</span>
+                        <input type="number" class="bd-num" data-r="seg-motion-dilate" min="1" max="56" step="1" value="2" style="width:56px">
+                    </label>
                     <div class="bd-meta" data-r="seg-info"></div>
                     <label class="bd-seg-refsize hidden" data-r="seg-ref-image-size-wrap" hidden data-i18n-title="tooltip.refImageSize">
                         <span data-i18n="output.refImageSize.label">参考图尺寸</span>
@@ -3243,6 +3251,10 @@ class MiniMaxH3DirectorEditor {
         this.segLabel = this.root.querySelector('[data-r="seg-label"]');
         this.segContinuityFromPrevWrap = this.root.querySelector('[data-r="seg-continuity-from-prev-wrap"]');
         this.segContinuityFromPrevCb = this.root.querySelector('[data-r="seg-continuity-from-prev"]');
+        this.segMotionWrap = this.root.querySelector('[data-r="seg-motion-wrap"]');
+        this.segMotionCb = this.root.querySelector('[data-r="seg-motion"]');
+        this.segMotionDilateWrap = this.root.querySelector('[data-r="seg-motion-dilate-wrap"]');
+        this.segMotionDilate = this.root.querySelector('[data-r="seg-motion-dilate"]');
         this.segRefImageSizeWrap = this.root.querySelector('[data-r="seg-ref-image-size-wrap"]');
         this.segRefImageSize = this.root.querySelector('[data-r="seg-ref-image-size"]');
         this.segInfo = this.root.querySelector('[data-r="seg-info"]');
@@ -3636,6 +3648,31 @@ class MiniMaxH3DirectorEditor {
                 "title",
                 t("tooltip.segmentContinuityFromPrev"),
             );
+        }
+        if (this.segMotionCb) {
+            this.segMotionCb.onchange = () => {
+                const seg = this.timeline.segments?.[this.selectedIndex];
+                if (!seg) return;
+                seg.motionFix = !!this.segMotionCb.checked;
+                this.commit(true);
+                this.syncSegmentMotionUI();
+            };
+            this.segMotionWrap?.setAttribute("title", t("tooltip.segmentMotion"));
+        }
+        if (this.segMotionDilate) {
+            const applyMotionDilate = () => {
+                const seg = this.timeline.segments?.[this.selectedIndex];
+                if (!seg) return;
+                const n = Math.max(1, Math.min(56, parseInt(this.segMotionDilate.value, 10) || 2));
+                seg.motionDilate = n;
+                this.segMotionDilate.value = String(n);
+                this.commit(true);
+            };
+            this.segMotionDilate.onchange = applyMotionDilate;
+            this.segMotionDilate.oninput = applyMotionDilate;
+            this.segMotionDilate.addEventListener("keydown", (e) => e.stopPropagation());
+            this.segMotionDilate.addEventListener("keyup", (e) => e.stopPropagation());
+            this.segMotionDilateWrap?.setAttribute("title", t("tooltip.segmentMotionDilate"));
         }
 
         this.genGlobalImg?.addEventListener("click", (e) => { stopDomEvent(e); this.pickGenSrcImage(true); });
@@ -5511,24 +5548,25 @@ class MiniMaxH3DirectorEditor {
 
     _segmentMetaAtFrame(frame) {
         const segs = [...this.timeline.segments].sort((a, b) => a.start - b.start);
+        const carry = (seg) => ({
+            prompt: seg.prompt || "",
+            taskType: seg.taskType || "",
+            refs: seg.refs ? JSON.parse(JSON.stringify(seg.refs)) : [],
+            // Keep Motion Fix selection across split/resize; continuity flags
+            // keep their existing reset-on-resplit behavior.
+            motionFix: !!seg.motionFix,
+            motionDilate: parseInt(seg.motionDilate, 10) || 0,
+        });
         for (const seg of segs) {
             if (frame >= seg.start && frame < seg.start + seg.length) {
-                return {
-                    prompt: seg.prompt || "",
-                    taskType: seg.taskType || "",
-                    refs: seg.refs ? JSON.parse(JSON.stringify(seg.refs)) : [],
-                };
+                return carry(seg);
             }
         }
         const last = segs[segs.length - 1];
         if (last) {
-            return {
-                prompt: last.prompt || "",
-                taskType: last.taskType || "",
-                refs: last.refs ? JSON.parse(JSON.stringify(last.refs)) : [],
-            };
+            return carry(last);
         }
-        return { prompt: "", taskType: "", refs: [] };
+        return { prompt: "", taskType: "", refs: [], motionFix: false, motionDilate: 0 };
     }
 
     _buildSegmentsFromSplitPoints(points, forcedPoints = null) {
@@ -5552,6 +5590,8 @@ class MiniMaxH3DirectorEditor {
                 prompt: meta.prompt,
                 taskType: meta.taskType,
                 refs: meta.refs,
+                motionFix: meta.motionFix,
+                motionDilate: meta.motionDilate,
             });
         }
         if (!newSegs.length) return null;
@@ -6366,7 +6406,30 @@ class MiniMaxH3DirectorEditor {
             this.timeline.output.continuityKeepTail = keepTail;
         }
         this.syncSegmentContinuityFromPrevUI();
+        this.syncSegmentMotionUI();
         this.syncSegmentRefImageSizeUI();
+    }
+
+    /** Per-segment Motion Fix (动作修复) on v2v/rv2v segment panels. */
+    syncSegmentMotionUI() {
+        const wrap = this.segMotionWrap;
+        const cb = this.segMotionCb;
+        if (!wrap || !cb) return;
+        const taskKey = this.getTaskKey?.() || "";
+        const show = !this.isImageBatch() && !this.isFl2vMode()
+            && (taskKey === "v2v" || taskKey === "rv2v");
+        wrap.classList.toggle("hidden", !show);
+        wrap.hidden = !show;
+        this.segMotionDilateWrap?.classList.toggle("hidden", !show);
+        if (this.segMotionDilateWrap) this.segMotionDilateWrap.hidden = !show;
+        if (!show) return;
+        const seg = this.timeline.segments?.[this.selectedIndex ?? 0];
+        cb.checked = !!seg?.motionFix;
+        if (this.segMotionDilate) {
+            const n = Math.max(1, Math.min(56, parseInt(seg?.motionDilate, 10) || 2));
+            this.segMotionDilate.value = String(n);
+        }
+        wrap.title = t("tooltip.segmentMotion");
     }
 
     /** Per-segment「引用上段」on v2v/rv2v segment panel (index>0 + master on). */

@@ -149,6 +149,55 @@ def _legacy_output_ref_image_size(timeline: dict | None) -> str | None:
     return _migrate_ref_image_size(raw, out)
 
 
+def _flag_true(value, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def resolve_segment_motion_fix(seg_data: dict | None) -> tuple[bool, int]:
+    """Per-segment 动作修复 flag + dilation override (0 = node default)."""
+    data = seg_data if isinstance(seg_data, dict) else {}
+    raw = data.get("motionFix")
+    if raw is None:
+        raw = data.get("motion_fix")
+    enabled = _flag_true(raw, False)
+    try:
+        dilate = int(
+            data.get("motionDilate")
+            if data.get("motionDilate") is not None
+            else (data.get("motion_dilate") or 0)
+        )
+    except (TypeError, ValueError):
+        dilate = 0
+    if dilate < 0:
+        dilate = 0
+    return enabled, dilate
+
+
+def resolve_exact_export(output_block: dict | None) -> bool:
+    """Source-audio-safe exact export (default on; timeline output.exactExport)."""
+    out = output_block if isinstance(output_block, dict) else {}
+    raw = out.get("exactExport")
+    if raw is None:
+        raw = out.get("exact_export")
+    return _flag_true(raw, True)
+
+
+def resolve_max_gap_frames(output_block: dict | None) -> int:
+    out = output_block if isinstance(output_block, dict) else {}
+    raw = out.get("maxGapFrames")
+    if raw is None:
+        raw = out.get("max_gap_frames")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = 8
+    return max(0, min(56, n))
+
+
 def resolve_ref_image_size(seg_or_data=None, plan_or_timeline=None) -> str:
     """Per-segment mode; legacy ``output.refImageSize`` as fallback."""
     raw = None
@@ -243,6 +292,9 @@ class SegmentPlan:
     ui_index: int | None = None
     # Per-segment「引用上段」; master「段间引导」must also be on. Default True.
     continuity_from_prev: bool = True
+    # Per-segment Motion Fix (动作修复): on/off + dilation override (0 = node default).
+    motion_fix_enabled: bool = False
+    motion_dilate: int = 0
     # match | 1024 | 1280 | 1536 | max. Official node only sees match | max.
     ref_image_size: str = "match"
 
@@ -285,6 +337,13 @@ class DirectorPlan:
     continuity_redraw: float = 0.10
     # Keep sample-trim remainder (~12f) instead of cropping back to UI length.
     continuity_keep_tail: bool = True
+    # Source-audio-safe length normalization: export exactly the source window
+    # and drop the pin phase gap from the previous export (video+audio together).
+    exact_export: bool = True
+    # Disable continuity for a seam when its phase gap exceeds this many frames.
+    max_gap_frames: int = 8
+    # Optional Motion Fix defaults (node pack); per-segment flags live on SegmentPlan.
+    motion_fix: dict | None = None
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
     # Full source-video PCM, reused only during this one Director execution and
     # freed when the run ends (replaces the old never-cleared process cache).
@@ -949,7 +1008,9 @@ def build_director_plan(
         )
         data = seg_data if isinstance(seg_data, dict) else {}
         seg.ref_image_size = resolve_ref_image_size(data, load_timeline)
+        seg.motion_fix_enabled, seg.motion_dilate = resolve_segment_motion_fix(data)
 
+    output_block = timeline.get("output") or {}
     return DirectorPlan(
         frame_rate=float(timeline.get("frameRate") or frame_rate or 24),
         total_frames=total,
@@ -976,6 +1037,8 @@ def build_director_plan(
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
+        exact_export=resolve_exact_export(output_block),
+        max_gap_frames=resolve_max_gap_frames(output_block),
         global_ref_audios=global_ref_audios,
     )
 
@@ -1112,6 +1175,15 @@ def plan_summary(plan: DirectorPlan) -> str:
             face_line = None
         if face_line:
             lines.append(face_line)
+        motion_line = None
+        try:
+            from .motion_pack import motion_report_line
+
+            motion_line = motion_report_line(plan)
+        except Exception:
+            motion_line = None
+        if motion_line:
+            lines.append(motion_line)
         if plan.continuity_enabled:
             pinned = [
                 seg.index + 1
@@ -1124,6 +1196,8 @@ def plan_summary(plan: DirectorPlan) -> str:
                 if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
             ]
             keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
+            if getattr(plan, "exact_export", True):
+                keep_note += ", exact export"
             lines.append(
                 f"Segment continuity: ON ({getattr(plan, 'continuity_mode', 'guide')} "
                 f"motion context {plan.continuity_overlap_frames}f{keep_note})"
@@ -1143,6 +1217,8 @@ def plan_summary(plan: DirectorPlan) -> str:
                     if getattr(seg, "continuity_from_prev", True)
                     else " — hard cut"
                 )
+            if getattr(seg, "motion_fix_enabled", False):
+                pin_note += " — motion"
             lines.append(
                 f"  #{seg.index + 1} [{seg.start_frame}:{seg.end_frame}] "
                 f"{seg.frame_count}f — {seg.task_key}{pin_note} — "
@@ -1178,6 +1254,8 @@ def plan_summary(plan: DirectorPlan) -> str:
             if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
         ]
         keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
+        if getattr(plan, "exact_export", True):
+            keep_note += ", exact export"
         lines.append(
             f"Segment continuity: ON ({getattr(plan, 'continuity_mode', 'guide')} "
             f"motion context {plan.continuity_overlap_frames}f{keep_note} "
@@ -1227,6 +1305,15 @@ def plan_summary(plan: DirectorPlan) -> str:
         face_line = None
     if face_line:
         lines.append(face_line)
+    motion_line = None
+    try:
+        from .motion_pack import motion_report_line
+
+        motion_line = motion_report_line(plan)
+    except Exception:
+        motion_line = None
+    if motion_line:
+        lines.append(motion_line)
     if plan.run_indices is not None:
         selected = sorted(plan.run_indices)
         skipped = [i + 1 for i in range(plan.segment_count) if i not in plan.run_indices]
@@ -1243,6 +1330,8 @@ def plan_summary(plan: DirectorPlan) -> str:
                 if getattr(seg, "continuity_from_prev", True)
                 else " — hard cut"
             )
+        if getattr(seg, "motion_fix_enabled", False):
+            pin_note += " — motion"
         lines.append(
             f"  #{seg.index + 1} [{seg.start_frame}:{seg.end_frame}] "
             f"{seg.frame_count}f — {seg.task_key}{pin_note} — "

@@ -781,14 +781,19 @@ def continuity_export_len(
     visible_frames: int,
     target_len: int,
     keep_tail: bool,
+    exact: bool = False,
 ) -> int:
     """Frames to keep after dropping the pinned head.
 
     Default crops the free region back to the UI visible length. ``keep_tail``
     keeps ``sample - trim`` (the 17k+5 remainder, typically 12 frames).
+    ``exact`` exports the source/UI window length and lets the phase-align gap
+    be trimmed from the previous export instead (source-audio-safe).
     """
     if int(trim_frames) <= 0:
         return int(target_len)
+    if exact:
+        return max(1, int(target_len))
     if keep_tail:
         return max(1, int(sample_len) - int(trim_frames))
     return int(visible_frames)

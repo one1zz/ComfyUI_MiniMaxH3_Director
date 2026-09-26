@@ -60,6 +60,7 @@ from .plan import (
 from .progress import report_director_finish, report_director_progress, report_director_segment_preview
 from .h3_motion_context import (
     DEFAULT_AUDIO_CONTEXT_FRAMES,
+    _phase_aligned_tail_start,
     apply_motion_context,
     continuity_export_len,
     describe_pin_window,
@@ -67,8 +68,25 @@ from .h3_motion_context import (
     handoff_end_frame,
     select_continuity_pin_latent,
     snap_context_frames,
+    steps_for_frames,
     trim_context_prefix,
     trim_export_tail,
+    video_from_latent,
+)
+from .motion_pack import (
+    motion_enabled_for_segment,
+    motion_master,
+    motion_report_line,
+    resolve_motion_for_segment,
+)
+from .motion_retime import (
+    apply_source_init_latent,
+    build_motion_plan,
+    expand_frames as expand_frames_with_holds,
+    motion_meta_for_handoff,
+    pin_window_for_available,
+    plan_length_audit,
+    recover_after_slowed_trim,
 )
 from .segment_cache import (
     load_first_pass_av_latent,
@@ -181,6 +199,58 @@ def _trim_decoded_to_export(
             if int(wf.shape[-1]) > want:
                 audio_dict = {"waveform": wf[..., :want], "sample_rate": sr}
     return decoded, audio_dict
+
+
+def _motion_recover_safe(
+    frames: torch.Tensor,
+    motion: dict[str, Any] | None,
+    *,
+    trim_slowed: int,
+    real_frames: int,
+    fail_fallback: bool = True,
+) -> torch.Tensor:
+    """Recover the real frame clock; emergency fallback keeps export length."""
+    real = max(1, int(real_frames))
+    if motion is None or not torch.is_tensor(frames) or frames.ndim != 4:
+        return frames
+    try:
+        return recover_after_slowed_trim(
+            frames,
+            motion.get("hold_map") or [],
+            trim_slowed=int(trim_slowed),
+            dilate=int(motion.get("dilate") or 1),
+            real_frames=real,
+        )
+    except Exception as exc:
+        log.warning("Motion recovery failed (%s).", exc)
+        if not fail_fallback:
+            raise
+        out = frames[:real] if int(frames.shape[0]) > real else frames
+        if int(out.shape[0]) < real:
+            pad = out[-1:].repeat(real - int(out.shape[0]), 1, 1, 1)
+            out = torch.cat([out, pad], dim=0)
+        return out
+
+
+def _predict_pin_gap(
+    context_frames: int,
+    prev_av: dict | None,
+    prev_end_frame: int | None,
+) -> int | None:
+    """Gap between a phase-aligned latent pin end and the previous export end."""
+    if prev_av is None or prev_end_frame is None:
+        return 0
+    try:
+        total = int(video_from_latent(prev_av).shape[2])
+        steps = steps_for_frames(int(context_frames))
+        if steps is None:
+            return None
+        _start, _pin_end, gap = _phase_aligned_tail_start(
+            total, steps, int(prev_end_frame)
+        )
+        return int(gap)
+    except Exception:
+        return None
 
 
 def _ref_tensor_from_seg_refs(refs, index: int) -> torch.Tensor | None:
@@ -583,9 +653,10 @@ def execute_director_plan_core(
             else ""
         )
         keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
+        exact_note = ", exact export" if getattr(plan, "exact_export", True) else ""
         reports.append(
             f"Segment continuity: ON — {mode_label} "
-            f"{snap_context_frames(plan.continuity_overlap_frames)}f{redraw_note}{keep_note} "
+            f"{snap_context_frames(plan.continuity_overlap_frames)}f{redraw_note}{keep_note}{exact_note} "
             "(previous AV tail + trim prefix; t2v/i2v/fl2v/r2v/v2v/rv2v)."
         )
         if pinned:
@@ -595,11 +666,36 @@ def execute_director_plan_core(
                 "  Hard cut (per-segment off): #"
                 + ", #".join(str(i) for i in skipped_pin)
             )
+        if getattr(plan, "exact_export", True):
+            gap_entries: list[tuple[int, int, int]] = []
+            for seg in all_segments:
+                source = int(seg.frame_count or 0)
+                if source <= 0:
+                    continue
+                # Exact export (and the motion path) keep the source window length.
+                gap_entries.append((int(seg.index), source, source))
+            if gap_entries:
+                try:
+                    reports.append(plan_length_audit(gap_entries))
+                except Exception:
+                    pass
+            reports.append(
+                f"  Exact export: 每段导出=源窗口；相位差 >{int(getattr(plan, 'max_gap_frames', 8) or 0)}f "
+                "的接缝改硬切（画面与音频同步裁切）。"
+            )
     else:
         reports.append(
             "Segment continuity: OFF — official MiniMax H3 per-segment path "
             "(no motion-context pin/patch/trim; r2v/v2v/rv2v use stock ReferenceToVideo)."
         )
+    if motion_master(plan) is not None:
+        motion_line = motion_report_line(plan)
+        if motion_line:
+            reports.append(motion_line)
+        if getattr(plan, "exact_export", True):
+            reports.append(
+                "Motion: 放慢段导出恢复为源窗口；跨时基钉入用重编码（钉入帧随后裁掉，不入成片）。"
+            )
 
     completed_outputs: dict[int, torch.Tensor] = {}
     completed_pre_refine: dict[int, torch.Tensor] = {}
@@ -610,6 +706,8 @@ def execute_director_plan_core(
     completed_low_carry: dict[int, dict] = {}
     completed_av_handoff: dict[int, dict] = {}
     completed_audios: dict[int, dict] = {}
+    # Resolved Motion Fix plans per segment (slowed lengths + hold map).
+    completed_motion: dict[int, dict] = {}
     # Segments actually executed by _run_one_segment in THIS run.
     # completed_* also get export-fill hydrations from disk; this set does not.
     resampled_this_run: set[int] = set()
@@ -683,6 +781,56 @@ def execute_director_plan_core(
         if clip_frames is not None:
             clip_frames, _ = prepare_segment_clip(clip_frames, num_frames)
 
+        # ── Motion Fix prep (v2v/rv2v, manual per-segment) ──────────────
+        # Source clip + target timeline slow down together; export recovers the
+        # exact source frame count after the final decode.
+        real_target_len = int(target_len)
+        motion_plan: dict[str, Any] | None = None
+        motion_cfg = resolve_motion_for_segment(plan, seg)
+        if motion_cfg is not None and selflift_will_run(plan, seg):
+            reports.append(
+                f"Seg #{seg.index + 1}: 动作修复已跳过（与 SelfLift 叠加未验证）"
+            )
+            motion_cfg = None
+        if motion_cfg is not None and clip_frames is not None and int(clip_frames.shape[0]) > 0:
+            if int(clip_frames.shape[0]) > int(target_len):
+                # Keep the exact source window; recovery exports this length.
+                clip_frames = clip_frames[: int(target_len)]
+            src_frames = int(clip_frames.shape[0])
+            min_frames = int(motion_cfg.get("min_frames") or 0)
+            if src_frames < min_frames:
+                reports.append(
+                    f"Seg #{seg.index + 1}: 动作修复已跳过 — {src_frames}f < "
+                    f"最短 {min_frames}f"
+                )
+            else:
+                try:
+                    motion_plan = build_motion_plan(
+                        clip_frames, motion_cfg, real_frames=src_frames
+                    )
+                    real_target_len = int(motion_plan["real_frames"])
+                    clip_frames = motion_plan["slowed_clip"]
+                    target_len = int(motion_plan["slowed_frames"])
+                    num_frames = target_len
+                    reports.append(
+                        f"Seg #{seg.index + 1}: motion {motion_plan['mode']} "
+                        f"dilate={motion_plan['dilate']} gate={motion_plan['peak_score']:.2f} "
+                        f"hot={motion_plan['hot_frames']}f "
+                        f"→ slowed {motion_plan['slowed_frames']}f, "
+                        f"recover {real_target_len}f, init={motion_plan['source_init_denoise']:.2f}"
+                    )
+                except Exception as exc:
+                    motion_plan = None
+                    if not bool(motion_cfg.get("fail_fallback", True)):
+                        raise
+                    reports.append(
+                        f"Seg #{seg.index + 1}: 动作修复准备失败（{exc}），本段按普通方式"
+                    )
+        elif motion_cfg is not None and (clip_frames is None or int(clip_frames.shape[0]) <= 0):
+            reports.append(
+                f"Seg #{seg.index + 1}: 动作修复已跳过 — 无源片段"
+            )
+
         # ── Continuity gate ─────────────────────────────────────────────
         # OFF → official MiniMax H3 path only (no prev load / pin / patch).
         # ON  → after stock conditioning, pin previous AV tail (incl. r2v/v2v/rv2v).
@@ -693,6 +841,7 @@ def execute_director_plan_core(
         prev_low_carry = None
         prev_audio = None
         prev_end_frame = None
+        prev_motion_meta = None
         prev_idx = seg.index - 1
         if continuity_active:
             if prev_idx in passthrough_indices:
@@ -751,6 +900,11 @@ def execute_director_plan_core(
                 )
                 if prev_handoff is not None:
                     completed_av_handoff[prev_idx] = prev_handoff
+            prev_motion_meta = completed_motion.get(prev_idx)
+            if prev_motion_meta is None and isinstance(prev_handoff, dict):
+                prev_motion_meta = prev_handoff.get("motion") or None
+            if prev_motion_meta is not None:
+                completed_motion[prev_idx] = prev_motion_meta
             prev_audio = completed_audios.get(prev_idx)
             if prev_audio is None and prev_seg is not None:
                 prev_audio = load_segment_audio(
@@ -771,11 +925,19 @@ def execute_director_plan_core(
                     "（该段本轮未重跑；接缝对齐成片中的旧结果）"
                 )
             if prev_handoff:
-                prev_end_frame = handoff_end_frame(
-                    trim_frames=int(prev_handoff.get("trim_frames") or 0),
-                    export_frames=int(prev_handoff.get("export_frames") or 0),
-                )
-                sample_f = int(prev_handoff.get("sample_frames") or 0)
+                if prev_motion_meta is not None:
+                    # Slowed sample coordinates; export = recovered real frames.
+                    prev_end_frame = handoff_end_frame(
+                        trim_frames=int(prev_motion_meta.get("slowed_trim") or 0),
+                        export_frames=int(prev_motion_meta.get("slowed_frames") or 0),
+                    )
+                    sample_f = int(prev_motion_meta.get("slowed_sample") or 0)
+                else:
+                    prev_end_frame = handoff_end_frame(
+                        trim_frames=int(prev_handoff.get("trim_frames") or 0),
+                        export_frames=int(prev_handoff.get("export_frames") or 0),
+                    )
+                    sample_f = int(prev_handoff.get("sample_frames") or 0)
                 # Absolute latent tail is only safe when it equals the export end.
                 if sample_f > 0 and prev_end_frame >= sample_f:
                     prev_end_frame = None
@@ -860,12 +1022,96 @@ def execute_director_plan_core(
         if skip_first_sample:
             # Cached first-pass latent already has its original pin; don't rebuild MC.
             use_motion_context = False
+        # Exact-export gap guard: a phase-aligned latent pin may end up to
+        # ``max_gap_frames`` before the previous export end; larger gaps become a
+        # hard cut so short segments never lose a big chunk of content.
+        if (
+            use_motion_context
+            and motion_plan is None
+            and prev_motion_meta is None
+            and not is_continue_mode(plan)
+            and bool(getattr(plan, "exact_export", True))
+        ):
+            guard_ctx = snap_context_frames(plan.continuity_overlap_frames)
+            guard_gap = _predict_pin_gap(guard_ctx, prev_av, prev_end_frame)
+            max_gap = max(0, int(getattr(plan, "max_gap_frames", 8) or 0))
+            if guard_gap is not None and guard_gap > max_gap:
+                use_motion_context = False
+                reports.append(
+                    f"Seg #{seg.index + 1}: pin gap {guard_gap}f > max {max_gap}f "
+                    "→ 本缝改为硬切（精确导出，不丢内容）"
+                )
+        # Slowed pin window: pick before the sample budget so generation_frame_budget
+        # reserves exactly the flagged slowed context. Must be a legal window
+        # (5/22/39/56) divisible by the dilation for group-aligned recovery.
+        motion_pin_window: int | None = None
+        motion_pin_frames: torch.Tensor | None = None
+        if (
+            use_motion_context
+            and motion_plan is None
+            and prev_motion_meta is not None
+            and (prev_tail is None or int(prev_tail.shape[0]) < 1)
+        ):
+            use_motion_context = False
+            reports.append(
+                f"Seg #{seg.index + 1}: 上一段无解码帧可钉入，本缝改为硬切"
+            )
+        if use_motion_context and motion_plan is not None:
+            d = max(1, int(motion_plan.get("dilate") or 1))
+            planned = int(motion_plan.get("pin_window") or 0)
+            avail_slowed = (
+                int(prev_tail.shape[0]) * d if prev_tail is not None else 0
+            )
+            preferred = snap_context_frames(plan.continuity_overlap_frames)
+            window = None
+            if preferred % d == 0 and preferred <= avail_slowed:
+                window = int(preferred)
+            if window is None:
+                window = (
+                    pin_window_for_available(avail_slowed, d, min_real=1)
+                    if planned
+                    else None
+                )
+                if window and planned:
+                    window = min(int(window), int(planned))
+            if not window:
+                use_motion_context = False
+                reports.append(
+                    f"Seg #{seg.index + 1}: dilate={d} 无可用合法衔接窗口"
+                    "（5/22/39/56 且能整除/有上一段帧），本缝改为硬切"
+                )
+            elif prev_tail is not None:
+                real_tail_n = max(1, int(window) // d)
+                tail = prev_tail[-real_tail_n:]
+                expanded, _holds = expand_frames_with_holds(
+                    tail, [d] * int(tail.shape[0])
+                )
+                if int(expanded.shape[0]) != int(window):
+                    use_motion_context = False
+                    reports.append(
+                        f"Seg #{seg.index + 1}: 钉入展开长度不符，本缝改为硬切"
+                    )
+                else:
+                    motion_pin_window = int(window)
+                    motion_pin_frames = expanded.to(
+                        device=clip_frames.device, dtype=clip_frames.dtype
+                    )
         # OFF → context_n=0 → sample_len == official segment length only.
-        context_n = snap_context_frames(plan.continuity_overlap_frames) if use_motion_context else 0
+        if use_motion_context and motion_pin_window:
+            context_n = int(motion_pin_window)
+        elif use_motion_context:
+            context_n = snap_context_frames(plan.continuity_overlap_frames)
+        else:
+            context_n = 0
         sample_len, _planned_trim = generation_frame_budget(num_frames, context_n)
         if use_motion_context:
             # Clear single-frame first lock so multi-frame context owns the head.
             first_frame = None
+        if use_motion_context and motion_pin_window:
+            reports.append(
+                f"Seg #{seg.index + 1}: 放慢钉入 {motion_pin_window}f slowed "
+                f"（实时重叠 {motion_pin_window // max(1, int(motion_plan.get('dilate') or 1))}f）"
+            )
 
         if seg.task_key in {"r2v", "v2v", "rv2v"} and (
             ref_images or ref_videos or ref_audios or ref_video_audios
@@ -899,8 +1145,41 @@ def execute_director_plan_core(
         if sb_note:
             log.info("MiniMax H3 Director: %s", sb_note)
 
+        # Motion Fix phase 2: partial-denoise init from the slowed source latent.
+        # The init covers the whole sample timeline: [pinned slowed head] + slowed
+        # visible, padded with the last frame to the aligned sample length.
+        first_pass_denoise = 1.0
+        if motion_plan is not None:
+            init_d = float(motion_plan.get("source_init_denoise") or 0.0)
+            if init_d > 0.0:
+                try:
+                    init_clip = clip_frames
+                    if motion_pin_frames is not None:
+                        init_clip = torch.cat([motion_pin_frames, clip_frames], dim=0)
+                    want = max(1, int(sample_len))
+                    have = int(init_clip.shape[0])
+                    if have < want:
+                        pad = init_clip[-1:].repeat(want - have, 1, 1, 1)
+                        init_clip = torch.cat([init_clip, pad], dim=0)
+                    elif have > want:
+                        init_clip = init_clip[:want]
+                    latent = apply_source_init_latent(latent, vae=vae, clip=init_clip)
+                    first_pass_denoise = max(0.01, min(1.0, init_d))
+                    reports.append(
+                        f"Seg #{seg.index + 1}: 源 latent 部分去噪初始化 "
+                        f"(denoise {first_pass_denoise:.2f}, init {want}f slowed)"
+                    )
+                except Exception as exc:
+                    if not bool((motion_cfg or {}).get("fail_fallback", True)):
+                        raise
+                    reports.append(
+                        f"Seg #{seg.index + 1}: 源初始化失败（{exc}），"
+                        "本段仍放慢+恢复，但只用参考条件"
+                    )
+
         trim_frames = 0
         after_shift = None
+        prev_export_trim = 0
         if use_motion_context:
             # Pin audio from previous AV latent whenever available.
             # Do not gate on decode_audio — mute only skips final audio decode.
@@ -908,8 +1187,41 @@ def execute_director_plan_core(
                 audio_mode != AUDIO_MODE_MUTE
                 and (prev_av is not None or prev_audio is not None)
             )
-            prev_av = select_continuity_pin_latent(latent, prev_first_pass_av, prev_av)
-            if is_continue_mode(plan):
+            pin_context_latent = select_continuity_pin_latent(
+                latent, prev_first_pass_av, prev_av
+            )
+            pin_context_frames = prev_tail
+            pin_context_length = context_n
+            pin_context_end = prev_end_frame
+            if motion_plan is not None or prev_motion_meta is not None:
+                # Timebase conversion across a retimed boundary: pin from decoded
+                # pixels (re-encoded). Pin frames are never exported, so the VAE
+                # round-trip cannot soften the final clip.
+                pin_context_latent = None
+                pin_context_end = None
+                if motion_plan is not None:
+                    if motion_pin_frames is None or not motion_pin_window:
+                        use_motion_context = False
+                        reports.append(
+                            f"Seg #{seg.index + 1}: 钉入帧未就绪，本缝改为硬切"
+                        )
+                    else:
+                        pin_context_frames = motion_pin_frames
+                        pin_context_length = int(motion_pin_window)
+                else:
+                    if prev_tail is None or int(prev_tail.shape[0]) < 1:
+                        use_motion_context = False
+                        reports.append(
+                            f"Seg #{seg.index + 1}: 上一段无解码帧可钉入，本缝改为硬切"
+                        )
+                    else:
+                        pin_context_length = context_n
+                if use_motion_context:
+                    reports.append(
+                        f"Seg #{seg.index + 1}: 时基转换钉入（重编码 "
+                        f"{pin_context_length}f）"
+                    )
+            if use_motion_context and is_continue_mode(plan):
                 from .h3_latent_continue import (
                     apply_latent_continue,
                     install_continue_prefix_remask,
@@ -917,11 +1229,11 @@ def execute_director_plan_core(
 
                 latent, trim_frames, prev_export_trim = apply_latent_continue(
                     latent,
-                    prev_av=prev_av,
-                    prev_tail=prev_tail,
+                    prev_av=pin_context_latent,
+                    prev_tail=pin_context_frames,
                     vae=vae,
-                    context_length=context_n,
-                    context_end_frame=prev_end_frame,
+                    context_length=pin_context_length,
+                    context_end_frame=pin_context_end,
                     pin_audio=pin_audio,
                     context_audio=prev_audio,
                     audio_vae=audio_vae,
@@ -929,14 +1241,14 @@ def execute_director_plan_core(
                     seam_min_mask=getattr(plan, "continuity_redraw", 0.10),
                 )
                 after_shift = install_continue_prefix_remask
-            else:
+            elif use_motion_context:
                 positive, trim_frames, prev_export_trim = apply_motion_context(
                     positive,
                     latent,
                     vae=vae,
-                    context_length=context_n,
-                    context_latent=prev_av,
-                    context_frames=prev_tail,
+                    context_length=pin_context_length,
+                    context_latent=pin_context_latent,
+                    context_frames=pin_context_frames,
                     # Always pass export audio so a canvas-mismatch fallback
                     # (Refine upscale) can still pin audio from the decoded tail.
                     context_audio=prev_audio,
@@ -945,13 +1257,13 @@ def execute_director_plan_core(
                     # t2v/i2v/r2v/v2v/rv2v: context owns the head.
                     # fl2v keeps last_frame, marked so origin-shift retiming can move it.
                     keep_existing_keyframes=(seg.task_key == "fl2v"),
-                    context_end_frame=prev_end_frame,
+                    context_end_frame=pin_context_end,
                     audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,
                 )
             # Phase-align can pin a few frames before the previous export end.
             # Drop that orphaned tail so concat does not replay it at the seam.
             trimmed_prev_export = 0
-            if prev_export_trim > 0:
+            if use_motion_context and prev_export_trim > 0:
                 fps = float(plan.frame_rate or 24)
                 prev_chunk = completed_outputs.get(prev_idx)
                 if prev_chunk is None and prev_idx >= 0:
@@ -1124,7 +1436,11 @@ def execute_director_plan_core(
                     )
             handoff_label = "guide+redraw" if is_continue_mode(plan) else "guide"
             task_hint = f"{task_hint} + {handoff_label} {trim_frames}f"
-            pin_note = describe_pin_window(prev_av, trim_frames, end_frame=prev_end_frame)
+            pin_note = (
+                ""
+                if (motion_plan is not None or prev_motion_meta is not None)
+                else describe_pin_window(prev_av, trim_frames, end_frame=prev_end_frame)
+            )
             if pin_note:
                 reports.append(f"Seg #{seg.index + 1}: {pin_note}")
             remask_note = (
@@ -1132,17 +1448,21 @@ def execute_director_plan_core(
                 if is_continue_mode(plan)
                 else ""
             )
-            export_len = continuity_export_len(
-                trim_frames=trim_frames,
-                sample_len=sample_len,
-                visible_frames=num_frames,
-                target_len=target_len,
-                keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
-            )
+            if motion_plan is not None:
+                export_len = int(real_target_len)
+            else:
+                export_len = continuity_export_len(
+                    trim_frames=trim_frames,
+                    sample_len=sample_len,
+                    visible_frames=num_frames,
+                    target_len=target_len,
+                    keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
+                    exact=bool(getattr(plan, "exact_export", True)),
+                )
             reports.append(
                 f"Seg #{seg.index + 1}: continuity {handoff_label} — "
                 f"{trim_frames}f from seg #{seg.index} {remask_note}"
-                f"({'AV latent' if prev_av is not None else 'pixels'}"
+                f"({'pixels/重编码' if pin_context_latent is None else 'AV latent'}"
                 f"{', +audio' if pin_audio else ', video-only'}); "
                 f"sample={sample_len}f → export {export_len}f"
                 + (
@@ -1218,6 +1538,9 @@ def execute_director_plan_core(
             cached_sample = int(cached_h.get("sample_frames") or 0)
             if cached_sample > 0:
                 sample_len = cached_sample
+            cached_motion = cached_h.get("motion")
+            if isinstance(cached_motion, dict):
+                completed_motion[seg.index] = cached_motion
             cached_low = pre_cache.get("low_carry")
             if isinstance(cached_low, dict) and "samples" in cached_low:
                 completed_low_carry[seg.index] = cached_low
@@ -1275,6 +1598,7 @@ def execute_director_plan_core(
                 shift_video=shift_video,
                 shift_audio=shift_audio,
                 sigmas=first_pass_sigmas,
+                denoise=first_pass_denoise,
                 on_phase=_report_sample_phase,
                 on_step_preview=_report_step_preview if live_tae_preview else None,
                 preview_every=1,
@@ -1330,13 +1654,28 @@ def execute_director_plan_core(
                 f"Segment {ui_idx + 1}/{timeline_seg_total}: "
                 "VRAM cleanup between first pass and refine"
             )
-        export_len = continuity_export_len(
-            trim_frames=trim_frames,
-            sample_len=sample_len,
-            visible_frames=num_frames,
-            target_len=target_len,
-            keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
+        if motion_plan is not None:
+            export_len = int(real_target_len)
+        else:
+            export_len = continuity_export_len(
+                trim_frames=trim_frames,
+                sample_len=sample_len,
+                visible_frames=num_frames,
+                target_len=target_len,
+                keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
+                exact=bool(getattr(plan, "exact_export", True)),
+            )
+        refine_handoff = {
+            "trim_frames": int(trim_frames),
+            "export_frames": int(export_len),
+            "sample_frames": int(sample_len),
+            "official_mc_length": False,
+        }
+        motion_handoff = motion_meta_for_handoff(
+            motion_plan, slowed_trim=trim_frames, slowed_sample=sample_len
         )
+        if motion_handoff is not None:
+            refine_handoff["motion"] = motion_handoff
         if (will_refine or continuity_active or run_face_refine or selflift_enabled(plan)) and not skip_first_sample:
             save_first_pass_cache(
                 node_id,
@@ -1345,12 +1684,7 @@ def execute_director_plan_core(
                 av_latent=first_pass_samples,
                 frames=pre_export,
                 low_carry=completed_low_carry.get(seg.index),
-                handoff={
-                    "trim_frames": int(trim_frames),
-                    "export_frames": int(export_len),
-                    "sample_frames": int(sample_len),
-                    "official_mc_length": False,
-                },
+                handoff=refine_handoff,
             )
         pass_clips: list[tuple[str, torch.Tensor]] = []
 
@@ -1366,13 +1700,31 @@ def execute_director_plan_core(
                 decoded_p, audio_p = _decode_av_latent(
                     latent, vae, audio_vae, decode_audio=decode_audio,
                 )
-                decoded_p, audio_p = _trim_decoded_to_export(
-                    decoded_p,
-                    audio_p,
-                    trim_frames=trim_frames,
-                    export_len=export_len,
-                    plan=plan,
-                )
+                if motion_plan is not None:
+                    decoded_p = _motion_recover_safe(
+                        decoded_p,
+                        motion_plan,
+                        trim_slowed=trim_frames,
+                        real_frames=real_target_len,
+                        fail_fallback=bool(
+                            (motion_cfg or {}).get("fail_fallback", True)
+                        ),
+                    )
+                    decoded_p, audio_p = _trim_decoded_to_export(
+                        decoded_p,
+                        audio_p,
+                        trim_frames=0,
+                        export_len=real_target_len,
+                        plan=plan,
+                    )
+                else:
+                    decoded_p, audio_p = _trim_decoded_to_export(
+                        decoded_p,
+                        audio_p,
+                        trim_frames=trim_frames,
+                        export_len=export_len,
+                        plan=plan,
+                    )
                 frames_p = decoded_p.cpu().float()
                 del decoded_p
                 path = maybe_export_segment_mp4(
@@ -1417,7 +1769,9 @@ def execute_director_plan_core(
                 on_phase=_report_sample_phase,
                 on_step_preview=_report_step_preview if live_tae_preview else None,
                 first_pass_images=upscale_frames,
-                trim_frames=trim_frames,
+                # Motion segments keep their pin outside refine; the slowed
+                # latent must not be re-pinned from a real-time prev latent.
+                trim_frames=0 if motion_plan is not None else trim_frames,
                 on_pass=_export_refine_pass if mp4_run_dir is not None else None,
                 prev_refine_av=completed_av_latents.get(prev_idx) if prev_idx >= 0 else None,
                 prev_end_frame=prev_end_frame,
@@ -1448,20 +1802,40 @@ def execute_director_plan_core(
         )
         # Default: crop free region back to UI length. 「保完整」keeps sample-trim
         # (the 17k+5 remainder). Next pin uses trim+export.
-        export_len = continuity_export_len(
-            trim_frames=trim_frames,
-            sample_len=sample_len,
-            visible_frames=num_frames,
-            target_len=target_len,
-            keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
-        )
-        decoded, audio_dict = _trim_decoded_to_export(
-            decoded,
-            audio_dict,
-            trim_frames=trim_frames,
-            export_len=export_len,
-            plan=plan,
-        )
+        # Motion segments drop the slowed hold frames first, then crop to the
+        # exact source window (source audio stays on its own clock).
+        if motion_plan is not None:
+            export_len = int(real_target_len)
+            decoded = _motion_recover_safe(
+                decoded,
+                motion_plan,
+                trim_slowed=trim_frames,
+                real_frames=real_target_len,
+                fail_fallback=bool((motion_cfg or {}).get("fail_fallback", True)),
+            )
+            decoded, audio_dict = _trim_decoded_to_export(
+                decoded,
+                audio_dict,
+                trim_frames=0,
+                export_len=export_len,
+                plan=plan,
+            )
+        else:
+            export_len = continuity_export_len(
+                trim_frames=trim_frames,
+                sample_len=sample_len,
+                visible_frames=num_frames,
+                target_len=target_len,
+                keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
+                exact=bool(getattr(plan, "exact_export", True)),
+            )
+            decoded, audio_dict = _trim_decoded_to_export(
+                decoded,
+                audio_dict,
+                trim_frames=trim_frames,
+                export_len=export_len,
+                plan=plan,
+            )
         report_director_progress(
             node_id, segment_index=progress_index, segment_total=seg_total,
             phase="decode", phase_value=1, phase_max=1, **meta,
@@ -1473,13 +1847,29 @@ def execute_director_plan_core(
         if chunk.dtype != torch.float32:
             chunk = chunk.float()
         if pre_export is not None:
-            pre_export, _ = _trim_decoded_to_export(
-                pre_export,
-                None,
-                trim_frames=trim_frames,
-                export_len=export_len,
-                plan=plan,
-            )
+            if motion_plan is not None:
+                pre_export = _motion_recover_safe(
+                    pre_export,
+                    motion_plan,
+                    trim_slowed=trim_frames,
+                    real_frames=real_target_len,
+                    fail_fallback=bool((motion_cfg or {}).get("fail_fallback", True)),
+                )
+                pre_export, _ = _trim_decoded_to_export(
+                    pre_export,
+                    None,
+                    trim_frames=0,
+                    export_len=int(real_target_len),
+                    plan=plan,
+                )
+            else:
+                pre_export, _ = _trim_decoded_to_export(
+                    pre_export,
+                    None,
+                    trim_frames=trim_frames,
+                    export_len=export_len,
+                    plan=plan,
+                )
             pre_chunk = pre_export
             if getattr(pre_chunk, "device", None) is not None and pre_chunk.device.type != "cpu":
                 pre_chunk = pre_chunk.cpu()
@@ -1588,6 +1978,12 @@ def execute_director_plan_core(
             # False ⇒ next pin must use context_end_frame = trim+export.
             "official_mc_length": False,
         }
+        handoff_motion = motion_meta_for_handoff(
+            motion_plan, slowed_trim=trim_frames, slowed_sample=sample_len
+        )
+        if handoff_motion is not None:
+            handoff["motion"] = handoff_motion
+            completed_motion[seg.index] = motion_plan
         completed_av_latents[seg.index] = samples
         completed_av_handoff[seg.index] = handoff
         if isinstance(audio_dict, dict) and audio_dict.get("waveform") is not None:
@@ -1797,6 +2193,26 @@ def execute_director_plan_core(
             )
             if cached_handoff is not None:
                 completed_av_handoff[seg.index] = cached_handoff
+                cached_motion = cached_handoff.get("motion")
+                if isinstance(cached_motion, dict):
+                    completed_motion[seg.index] = cached_motion
+                    if pre_fill is not None:
+                        # .pre frames are slowed; recover them for the pre output.
+                        recovered_pre = _motion_recover_safe(
+                            pre_fill,
+                            {
+                                "hold_map": cached_motion.get("hold_map") or [],
+                                "dilate": int(cached_motion.get("dilate") or 1),
+                            },
+                            trim_slowed=int(cached_motion.get("slowed_trim") or 0),
+                            real_frames=int(
+                                cached_motion.get("real_frames")
+                                or getattr(seg, "frame_count", 0)
+                                or 0
+                            ),
+                            fail_fallback=True,
+                        )
+                        completed_pre_refine[seg.index] = recovered_pre
             audio_note = ", +audio" if cached_audio is not None else ", no audio cache"
             stale_note = ", stale fingerprint" if used_stale else ""
             reports.append(

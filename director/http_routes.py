@@ -558,6 +558,9 @@ async def minimax_first_pass_cache_status(request):
 
         plan.selflift = normalize_selflift_pack(body.get("selflift"))
         plan.semantic_bridge = normalize_semantic_bridge_pack(body.get("semantic_bridge"))
+        from .motion_pack import normalize_motion_pack
+
+        plan.motion_fix = normalize_motion_pack(body.get("motion_fix"))
         plan.refine = normalize_refine_pack(
             body.get("refine"),
             base_width=int(getattr(plan, "width", 0) or 0),

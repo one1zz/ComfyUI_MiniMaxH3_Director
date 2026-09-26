@@ -114,6 +114,18 @@ class MiniMaxH3Director:
                         ),
                     },
                 ),
+                "motion_fix": (
+                    "MMX_DIR_MOTION",
+                    {
+                        "tooltip": (
+                            "Optional Motion Fix node. Per-segment 动作修复 on the "
+                            "timeline slows action-hot v2v/rv2v segments with integer "
+                            "frame holds, optionally inits from the slowed source latent, "
+                            "then recovers the exact source frame count. Source audio is "
+                            "never retimed. Unconnected = current behavior."
+                        ),
+                    },
+                ),
                 "refine": (
                     "MMX_DIR_REFINE",
                     {
@@ -217,6 +229,12 @@ class MiniMaxH3Director:
                     "semantic_bridge: expected MiniMax H3 Director Semantic Bridge "
                     f"(MMX_DIR_SEMANTIC_BRIDGE), linked node returns {got_bridge}."
                 )
+            got_motion = input_types.get("motion_fix")
+            if got_motion is not None and got_motion != "MMX_DIR_MOTION":
+                return (
+                    "motion_fix: expected MiniMax H3 Director Motion Fix "
+                    f"(MMX_DIR_MOTION), linked node returns {got_motion}."
+                )
             got_selflift = input_types.get("selflift")
             if got_selflift is not None and got_selflift != "MMX_DIR_SELFLIFT":
                 return (
@@ -263,7 +281,9 @@ class MiniMaxH3Director:
         "(external priority over UI cards). Optional semantic_bridge accepts "
         "MiniMax H3 Director Semantic Bridge (cond-token student; Ref2VA forced-compat). "
         "Optional selflift accepts MiniMax H3 Director SelfLift "
-        "(progressive first-pass on this canvas). Optional refine accepts MiniMax H3 Director Refine "
+        "(progressive first-pass on this canvas). Optional motion_fix accepts "
+        "MiniMax H3 Director Motion Fix (per-segment slowdown + exact recovery; v2v/rv2v). "
+        "Optional refine accepts MiniMax H3 Director Refine "
         "(second sample / upscale). Optional face_refine accepts MiniMax H3 Director FaceRefine "
         "(crop / re-sample / stitch). images_pre_refine is the first-pass video before refine. "
         "images_pre_face_refine is the video before face stitch "
@@ -290,6 +310,7 @@ class MiniMaxH3Director:
         r2v_groups=None,
         semantic_bridge=None,
         selflift=None,
+        motion_fix=None,
         refine=None,
         face_refine=None,
         sigmas=None,
@@ -324,6 +345,7 @@ class MiniMaxH3Director:
             r2v_groups=r2v_groups,
             semantic_bridge=semantic_bridge,
             selflift=selflift,
+            motion_fix=motion_fix,
             refine=refine,
             face_refine=face_refine,
         )

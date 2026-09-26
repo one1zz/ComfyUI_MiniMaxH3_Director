@@ -382,7 +382,10 @@ def build_gen_director_plan(
         _resolve_export_mode,
         concat_common_segment_prompt,
         merge_indexed_refs,
+        resolve_exact_export,
+        resolve_max_gap_frames,
         resolve_ref_image_size,
+        resolve_segment_motion_fix,
         segment_ref_audios_for_context,
         segment_refs_for_context,
     )
@@ -660,6 +663,12 @@ def build_gen_director_plan(
                     seg_data if isinstance(seg_data, dict) else {},
                     timeline,
                 ),
+                motion_fix_enabled=resolve_segment_motion_fix(
+                    seg_data if isinstance(seg_data, dict) else {}
+                )[0],
+                motion_dilate=resolve_segment_motion_fix(
+                    seg_data if isinstance(seg_data, dict) else {}
+                )[1],
             )
         )
 
@@ -711,5 +720,7 @@ def build_gen_director_plan(
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
+        exact_export=resolve_exact_export(output_block),
+        max_gap_frames=resolve_max_gap_frames(output_block),
         global_ref_audios=shared_ref_audios,
     )
