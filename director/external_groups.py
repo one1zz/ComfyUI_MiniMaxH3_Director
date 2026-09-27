@@ -605,7 +605,6 @@ def build_plan_from_external_groups(
         drop_unusable_audio_prompt_tags,
         reinforce_r2v_prompt,
         resolve_exact_export,
-        resolve_max_gap_frames,
         resolve_segment_motion_fix,
         usable_ref_audio_indices,
     )
@@ -899,7 +898,6 @@ def build_plan_from_external_groups(
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
         exact_export=resolve_exact_export(timeline.get("output")),
-        max_gap_frames=resolve_max_gap_frames(timeline.get("output")),
         global_ref_audios=list(common_audios_raw) if family == "r2v" else [],
     )
     # Prefer the frontend wiring witness (same blob the cache panel sends).

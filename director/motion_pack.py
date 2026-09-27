@@ -23,10 +23,8 @@ from .motion_retime import (
     MAX_DILATE,
     MOTION_MODES,
     MOTION_PIPELINE_ID,
-    build_uniform_hold_map,
     dilation_pin_window,
     dilation_supports_continuity,
-    hold_map_total,
     supported_dilations,
 )
 
@@ -220,12 +218,6 @@ def motion_report_line(plan, seg=None) -> str | None:
         f"audio={cfg.get('audio_recover') or DEFAULT_AUDIO_RECOVER}, "
         f"window={dilation_pin_window(d) or 'hard-cut'}"
     )
-
-
-def motion_uniform_slowed_frames(real_frames: int, dilate: int) -> int:
-    from .motion_retime import _align
-
-    return _align(hold_map_total(build_uniform_hold_map(real_frames, dilate)))
 
 
 __all__ = [

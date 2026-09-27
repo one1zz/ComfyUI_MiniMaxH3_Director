@@ -618,34 +618,73 @@ def finalize_director_outputs(
         try:
             from pathlib import Path as _Path
 
-            from ..director.audio_export import _pad_or_trim_audio_to_frames
+            from ..director.audio_export import (
+                _align_audio_channels,
+                _pad_or_trim_audio_to_frames,
+            )
             from ..lib.video_export import write_audio_wav
 
             fps_w = float(getattr(plan, "frame_rate", 24) or 24)
-            sr_w = 32000
-            for aud in audio_out:
-                if isinstance(aud, dict) and int(aud.get("sample_rate") or 0) > 0:
-                    sr_w = int(aud["sample_rate"])
-                    break
             counts_w = segment_frame_counts or [int(s.shape[0]) for s in images_out]
+            # One sample rate for the whole timeline: prefer the model VAE rate
+            # in generate mode, else the first usable segment rate. Segments on
+            # other rates are resampled (torchaudio) or skipped with a warning.
+            sr_w = 32000 if use_generated else 0
+            if sr_w <= 0:
+                for aud in audio_out:
+                    if isinstance(aud, dict) and int(aud.get("sample_rate") or 0) > 0:
+                        sr_w = int(aud["sample_rate"])
+                        break
+            if sr_w <= 0:
+                sr_w = 32000
             parts_w = []
+            skipped_w = 0
             for i, aud in enumerate(audio_out):
                 fc = int(counts_w[i]) if i < len(counts_w) else 0
+                usable = (
+                    aud
+                    if isinstance(aud, dict)
+                    and torch.is_tensor(aud.get("waveform"))
+                    and int(aud["waveform"].numel()) > 0
+                    else None
+                )
                 part = _pad_or_trim_audio_to_frames(
-                    aud if isinstance(aud, dict) and aud.get("waveform") is not None else None,
+                    usable,
                     frame_count=fc,
                     fps=fps_w,
                     sample_rate=sr_w,
                 )
                 wave = part.get("waveform") if isinstance(part, dict) else None
-                if isinstance(wave, torch.Tensor) and wave.numel() > 0:
-                    parts_w.append(wave)
+                if not (isinstance(wave, torch.Tensor) and wave.numel() > 0):
+                    continue
+                src_sr = int(part.get("sample_rate") or sr_w)
+                if src_sr != sr_w:
+                    try:
+                        import torchaudio
+
+                        wave = torchaudio.functional.resample(wave, src_sr, sr_w)
+                    except Exception as exc:
+                        skipped_w += 1
+                        log.warning(
+                            "Director merged WAV: segment %d sr %d -> %d skipped (%s)",
+                            i + 1,
+                            src_sr,
+                            sr_w,
+                            exc,
+                        )
+                        continue
+                parts_w.append(wave)
             if parts_w:
+                max_ch = max(int(w.shape[1]) for w in parts_w)
+                parts_w = [_align_audio_channels(w, max_ch) for w in parts_w]
                 merged = torch.cat(parts_w, dim=-1)
+                merged = _align_audio_channels(merged, max(2, max_ch))
                 dest = _Path(plan.segment_mp4_run_dir) / "director_timeline.wav"
                 written = write_audio_wav(
                     dest, {"waveform": merged, "sample_rate": sr_w}
                 )
+                if written and skipped_w:
+                    report += f"\n\nSegment audio: {skipped_w} segment(s) skipped (sample-rate mismatch, torchaudio missing)."
                 if written:
                     report += (
                         f"\n\nSegment audio (lossless): {written} — "

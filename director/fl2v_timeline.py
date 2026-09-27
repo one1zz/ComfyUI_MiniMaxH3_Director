@@ -523,7 +523,6 @@ def build_fl2v_director_plan(
         _parse_run_selection,
         _resolve_export_mode,
         resolve_exact_export,
-        resolve_max_gap_frames,
         resolve_segment_motion_fix,
     )
 
@@ -761,5 +760,4 @@ def build_fl2v_director_plan(
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
         exact_export=resolve_exact_export(timeline.get("output")),
-        max_gap_frames=resolve_max_gap_frames(timeline.get("output")),
     )

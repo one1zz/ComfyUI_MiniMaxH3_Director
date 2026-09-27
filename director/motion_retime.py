@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 import torch
 
@@ -32,7 +32,6 @@ DEFAULT_GATE_ABS = 2.0
 DEFAULT_GATE_REL = 0.35
 DEFAULT_BRIDGE_FRAMES = 2
 DEFAULT_RAMP_FRAMES = 1
-RECOVER_TAIL_MARGIN = 0  # extra safety: never recover fewer than this many frames
 
 MOTION_MODES = ("uniform", "adaptive")
 
@@ -111,7 +110,8 @@ def _frame_heat(frames: torch.Tensor, *, max_side: int = 64) -> list[float]:
         x = F.interpolate(x, size=(th, tw), mode="area")
     gray = x.mean(dim=1)  # [T, h, w]
     diff = (gray[1:] - gray[:-1]).abs().mean(dim=(1, 2)) * 255.0
-    heat = [float(diff[0])] + [float(v) for v in diff]  # align to frames
+    # per-frame forward difference; the last frame repeats the previous one
+    heat = [float(v) for v in diff] + [float(diff[-1])]
     # light 3-tap smoothing so single-frame noise does not open a span
     if len(heat) >= 3:
         smoothed = [heat[0]]
@@ -167,11 +167,12 @@ def build_adaptive_hold_map(
                 i = j
             else:
                 i += 1
-    # ramp shoulders
+    # ramp shoulders (snapshot so a newly ramped frame cannot cascade to the end)
     r = max(0, int(ramp))
     if r > 0:
+        base = list(hot)
         for i in range(n):
-            if hot[i]:
+            if base[i]:
                 for k in range(max(0, i - r), i):
                     hot[k] = True
                 for k in range(i + 1, min(n, i + r + 1)):
@@ -274,29 +275,6 @@ def recover_after_slowed_trim(
     return out[:real] if real and int(out.shape[0]) > real else out
 
 
-def expand_real_tail_for_pin(
-    tail: torch.Tensor,
-    *,
-    dilate: int,
-    hold_map: Sequence[int] | None = None,
-) -> torch.Tensor:
-    """Expand a real-time tail into the slowed timebase for a slowed segment pin."""
-    d = max(1, int(dilate))
-    if int(tail.shape[0]) < 1:
-        return tail
-    if hold_map is None:
-        return expand_frames(tail, [d] * int(tail.shape[0]))[0]
-    holds = [max(1, int(h)) for h in hold_map]
-    if len(holds) != int(tail.shape[0]):
-        raise ValueError("motion retime: tail hold map length mismatch.")
-    return expand_frames(tail, holds)[0]
-
-
-def resolve_pin_real_frames(window_slowed: int, dilate: int) -> int:
-    d = max(1, int(dilate))
-    return max(1, int(window_slowed) // d)
-
-
 def build_hold_map(
     clip: torch.Tensor,
     *,
@@ -324,27 +302,6 @@ def build_hold_map(
     return build_uniform_hold_map(n, dilate), motion_peak_score(clip)
 
 
-def slowed_run_length(hold_map: Sequence[int]) -> int:
-    """Slowed clip length before final align extension."""
-    return hold_map_total(hold_map)
-
-
-def audit_motion_segment(
-    *,
-    real_frames: int,
-    dilate: int,
-    hold_map: Sequence[int] | None = None,
-) -> str:
-    holds = list(hold_map) if hold_map is not None else build_uniform_hold_map(real_frames, dilate)
-    total = sum(holds)
-    slowed = _align(total)
-    hot = sum(1 for h in holds if int(h) > 1)
-    return (
-        f"motion: {real_frames}f → {slowed}f slowed "
-        f"(dilate={dilate}, hot={hot}f, groups={len(holds)}, align+{slowed - total})"
-    )
-
-
 def build_motion_plan(
     clip: torch.Tensor,
     motion_cfg: dict[str, Any],
@@ -359,14 +316,19 @@ def build_motion_plan(
             f"motion fix: dilate {dilate} > max {MAX_DILATE}."
         )
     mode = str(motion_cfg.get("mode") or "uniform").strip().lower()
+    # Explicit None handling: 0 is a legal user choice (disable ramp/gate).
+    gate_abs = motion_cfg.get("gate_abs")
+    gate_rel = motion_cfg.get("gate_rel")
+    bridge = motion_cfg.get("bridge")
+    ramp = motion_cfg.get("ramp")
     hold_map, peak = build_hold_map(
         clip,
         mode=mode,
         dilate=dilate,
-        gate_abs=float(motion_cfg.get("gate_abs") or DEFAULT_GATE_ABS),
-        gate_rel=float(motion_cfg.get("gate_rel") or DEFAULT_GATE_REL),
-        bridge=int(motion_cfg.get("bridge") or DEFAULT_BRIDGE_FRAMES),
-        ramp=int(motion_cfg.get("ramp") or DEFAULT_RAMP_FRAMES),
+        gate_abs=DEFAULT_GATE_ABS if gate_abs is None else float(gate_abs),
+        gate_rel=DEFAULT_GATE_REL if gate_rel is None else float(gate_rel),
+        bridge=DEFAULT_BRIDGE_FRAMES if bridge is None else int(bridge),
+        ramp=DEFAULT_RAMP_FRAMES if ramp is None else int(ramp),
     )
     if len(hold_map) != real:
         hold_map = build_uniform_hold_map(real, dilate)
@@ -462,15 +424,25 @@ def apply_source_init_latent(latent: dict, *, vae, clip: torch.Tensor) -> dict:
     return out
 
 
-def _audio_fade_window(length: int, fade: int, device, dtype) -> torch.Tensor:
+def _audio_fade_window(
+    length: int,
+    fade: int,
+    *,
+    fade_in: bool = True,
+    fade_out: bool = True,
+    device,
+    dtype,
+) -> torch.Tensor:
     win = torch.ones(int(length), device=device, dtype=dtype)
     f = int(fade)
-    if f > 0 and int(length) >= 2 * f:
+    if f > 0 and int(length) >= 2 * f and (fade_in or fade_out):
         ramp = 0.5 - 0.5 * torch.cos(
             math.pi * torch.arange(1, f + 1, device=device, dtype=dtype) / float(f)
         )
-        win[:f] = ramp
-        win[-f:] = ramp.flip(0)
+        if fade_in:
+            win[:f] = ramp
+        if fade_out:
+            win[-f:] = ramp.flip(0)
     return win
 
 
@@ -570,8 +542,20 @@ def recover_held_audio(
             )
         elif int(chunk.shape[-1]) > length:
             chunk = chunk[..., :length]
-        if fade > 0 and length >= 2 * fade:
-            chunk = chunk * _audio_fade_window(length, fade, wave.device, wave.dtype)
+        # Fade only at real jump boundaries: hold=1 neighbours are contiguous in
+        # the slowed waveform, so fading every frame would add a 24 Hz notch.
+        prev_hold = holds[i - 1] if i > 0 else 0
+        need_in = i == 0 or prev_hold > 1
+        need_out = i == real - 1 or hold > 1
+        if fade > 0 and length >= 2 * fade and (need_in or need_out):
+            chunk = chunk * _audio_fade_window(
+                length,
+                fade,
+                fade_in=need_in,
+                fade_out=need_out,
+                device=wave.device,
+                dtype=wave.dtype,
+            )
         end = min(target, pos + length)
         if end > pos:
             out[..., pos:end] = chunk[..., : end - pos]

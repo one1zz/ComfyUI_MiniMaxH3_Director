@@ -383,7 +383,6 @@ def build_gen_director_plan(
         concat_common_segment_prompt,
         merge_indexed_refs,
         resolve_exact_export,
-        resolve_max_gap_frames,
         resolve_ref_image_size,
         resolve_segment_motion_fix,
         segment_ref_audios_for_context,
@@ -721,6 +720,5 @@ def build_gen_director_plan(
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
         exact_export=resolve_exact_export(output_block),
-        max_gap_frames=resolve_max_gap_frames(output_block),
         global_ref_audios=shared_ref_audios,
     )

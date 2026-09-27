@@ -247,6 +247,17 @@ function snapContinuityFrames(raw) {
     return best;
 }
 
+function isExactExportEnabled(output) {
+    const raw = output?.exactExport ?? output?.exact_export;
+    if (raw === undefined || raw === null) return true;
+    if (raw === false || raw === 0) return false;
+    if (typeof raw === "string") {
+        const s = raw.trim().toLowerCase();
+        return !(s === "false" || s === "0" || s === "no" || s === "off");
+    }
+    return !!raw;
+}
+
 function normalizeOutputContinuity(output = {}) {
     const rawOverlap = output.continuityOverlapFrames ?? output.continuity_overlap_frames ?? DEFAULT_CONTINUITY_FRAMES;
     return {
@@ -258,7 +269,7 @@ function normalizeOutputContinuity(output = {}) {
             output.continuityRedraw ?? output.continuity_redraw ?? DEFAULT_CONTINUITY_REDRAW,
         ),
         continuityKeepTail: isContinuityKeepTail(output),
-        exactExport: (output.exactExport ?? output.exact_export ?? true) !== false,
+        exactExport: isExactExportEnabled(output),
         audioMode: normalizeAudioMode(output.audioMode ?? output.audio_mode),
         refImageSize: normalizeRefImageSize(output.refImageSize ?? output.ref_image_size),
     };
@@ -2000,7 +2011,7 @@ function parseTimeline(raw, totalFrames, fps) {
             continuityMode: data.output?.continuityMode ?? data.output?.continuity_mode,
             continuityRedraw: data.output?.continuityRedraw ?? data.output?.continuity_redraw,
             continuityKeepTail: data.output?.continuityKeepTail ?? data.output?.continuity_keep_tail,
-            exactExport: (data.output?.exactExport ?? data.output?.exact_export ?? true) !== false,
+            exactExport: isExactExportEnabled(data.output),
         });
         // Infer aspectRatio from saved width/height when older payloads omitted the label.
         if (!data.output.aspectRatio && data.output.width > 0 && data.output.height > 0) {
@@ -3033,10 +3044,10 @@ class MiniMaxH3DirectorEditor {
                         <button type="button" class="bd-btn bd-r2v-common-toggle" data-r="r2v-common-toggle" data-i18n="panel.r2vCommonEnable">启用公共参数</button>
                     </div>
                 </div>
-                <div class="bd-gen-fc-row hidden" data-r="global-motion-row" style="gap:10px;align-items:center;padding:4px 0 2px">
+                <div class="bd-gen-fc-row hidden" data-r="global-motion-row" data-i18n-title="tooltip.segmentMotion" style="gap:10px;align-items:center;padding:4px 0 2px">
                     <span class="bd-label" data-r="global-motion-label" data-i18n="panel.segmentMotion">本段动作修复</span>
                     <label class="bd-seg-continuity"><input type="checkbox" data-r="global-motion-cb"><span data-i18n="batch.motionFix">动作修复</span></label>
-                    <label class="bd-seg-continuity"><span data-i18n="batch.motionDilate">倍率</span><input type="number" class="bd-num" data-r="global-motion-dilate" min="1" max="56" step="1" value="2" style="width:56px"></label>
+                    <label class="bd-seg-continuity"><span data-i18n="batch.motionDilate">倍率</span><input type="number" class="bd-num" data-r="global-motion-dilate" min="1" max="56" step="1" value="2" style="width:56px" data-i18n-title="tooltip.segmentMotionDilate"></label>
                 </div>
                 <div class="bd-r2v-common-body" data-r="r2v-common-body">
                     <div class="bd-meta bd-r2v-common-hint hidden" data-r="r2v-common-hint" data-i18n="panel.r2vCommonHint">公共参考图/视频/音频供各组读取；公共提示词会与每组提示词拼接成完整提示词。同槽位以组内素材优先。</div>
@@ -3102,11 +3113,11 @@ class MiniMaxH3DirectorEditor {
                         <input type="checkbox" data-r="seg-continuity-from-prev">
                         <span data-i18n="batch.continuityFromPrev">引用上段</span>
                     </label>
-                    <label class="bd-seg-continuity hidden" data-r="seg-motion-wrap" hidden>
+                    <label class="bd-seg-continuity hidden" data-r="seg-motion-wrap" hidden data-i18n-title="tooltip.segmentMotion">
                         <input type="checkbox" data-r="seg-motion">
                         <span data-i18n="batch.motionFix">动作修复</span>
                     </label>
-                    <label class="bd-seg-continuity hidden" data-r="seg-motion-dilate-wrap" hidden>
+                    <label class="bd-seg-continuity hidden" data-r="seg-motion-dilate-wrap" hidden data-i18n-title="tooltip.segmentMotionDilate">
                         <span data-i18n="batch.motionDilate">倍率</span>
                         <input type="number" class="bd-num" data-r="seg-motion-dilate" min="1" max="56" step="1" value="2" style="width:56px">
                     </label>
@@ -3683,22 +3694,27 @@ class MiniMaxH3DirectorEditor {
                 const seg = this.timeline.segments?.[this.selectedIndex];
                 if (!seg) return;
                 seg.motionFix = !!this.segMotionCb.checked;
-                this.commit(true);
-                this.syncSegmentMotionUI();
+                this.commit(false, { syncTimeline: true });
+                this.syncGlobalMotionUI();
             };
             this.segMotionWrap?.setAttribute("title", t("tooltip.segmentMotion"));
         }
         if (this.segMotionDilate) {
-            const applyMotionDilate = () => {
+            const readMotionDilate = () => Math.max(
+                1, Math.min(56, parseInt(this.segMotionDilate.value, 10) || 2),
+            );
+            this.segMotionDilate.onchange = () => {
                 const seg = this.timeline.segments?.[this.selectedIndex];
                 if (!seg) return;
-                const n = Math.max(1, Math.min(56, parseInt(this.segMotionDilate.value, 10) || 2));
+                const n = readMotionDilate();
                 seg.motionDilate = n;
                 this.segMotionDilate.value = String(n);
-                this.commit(true);
+                this.commit(false, { syncTimeline: true });
+                this.syncGlobalMotionUI();
             };
-            this.segMotionDilate.onchange = applyMotionDilate;
-            this.segMotionDilate.oninput = applyMotionDilate;
+            this.segMotionDilate.oninput = () => {
+                this.segMotionDilate.value = String(readMotionDilate());
+            };
             this.segMotionDilate.addEventListener("keydown", (e) => e.stopPropagation());
             this.segMotionDilate.addEventListener("keyup", (e) => e.stopPropagation());
             this.segMotionDilateWrap?.setAttribute("title", t("tooltip.segmentMotionDilate"));
@@ -3710,22 +3726,27 @@ class MiniMaxH3DirectorEditor {
                 const seg = this.timeline.segments?.[this.selectedIndex];
                 if (!seg) return;
                 seg.motionFix = !!this.globalMotionCb.checked;
-                this.commit(true);
-                this.syncGlobalMotionUI();
+                this.commit(false, { syncTimeline: true });
+                this.syncSegmentMotionUI();
             };
             this.globalMotionRow?.setAttribute("title", t("tooltip.segmentMotion"));
         }
         if (this.globalMotionDilate) {
-            const applyGlobalMotionDilate = () => {
+            const readGlobalMotionDilate = () => Math.max(
+                1, Math.min(56, parseInt(this.globalMotionDilate.value, 10) || 2),
+            );
+            this.globalMotionDilate.onchange = () => {
                 const seg = this.timeline.segments?.[this.selectedIndex];
                 if (!seg) return;
-                const n = Math.max(1, Math.min(56, parseInt(this.globalMotionDilate.value, 10) || 2));
+                const n = readGlobalMotionDilate();
                 seg.motionDilate = n;
                 this.globalMotionDilate.value = String(n);
-                this.commit(true);
+                this.commit(false, { syncTimeline: true });
+                this.syncSegmentMotionUI();
             };
-            this.globalMotionDilate.onchange = applyGlobalMotionDilate;
-            this.globalMotionDilate.oninput = applyGlobalMotionDilate;
+            this.globalMotionDilate.oninput = () => {
+                this.globalMotionDilate.value = String(readGlobalMotionDilate());
+            };
             this.globalMotionDilate.addEventListener("keydown", (e) => e.stopPropagation());
             this.globalMotionDilate.addEventListener("keyup", (e) => e.stopPropagation());
             this.globalMotionDilate.setAttribute("title", t("tooltip.segmentMotionDilate"));
@@ -6313,6 +6334,7 @@ class MiniMaxH3DirectorEditor {
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
+            exactExport: true,
         };
         // Prefer ResolutionSelector fields; backfill from width/height when missing.
         // Custom keeps explicit width/height and does not recompute from megapixels.
@@ -6431,6 +6453,7 @@ class MiniMaxH3DirectorEditor {
         }
         const masterOn = show && isContinuityEnabled(this.timeline?.output);
         if (this.segmentContinuityModeWrap) {
+            this.segmentContinuityModeWrap.classList.toggle("hidden", !masterOn);
             this.segmentContinuityModeWrap.hidden = !masterOn;
             this.segmentContinuityModeWrap.setAttribute("aria-hidden", masterOn ? "false" : "true");
             this.segmentContinuityModeWrap.title = masterOn ? t("tooltip.continuityMode") : "";
@@ -6442,6 +6465,7 @@ class MiniMaxH3DirectorEditor {
         }
         const redrawOn = masterOn && normalizeContinuityMode(this.timeline?.output?.continuityMode) === "continue";
         if (this.segmentContinuityRedrawWrap) {
+            this.segmentContinuityRedrawWrap.classList.toggle("hidden", !redrawOn);
             this.segmentContinuityRedrawWrap.hidden = !redrawOn;
             this.segmentContinuityRedrawWrap.setAttribute("aria-hidden", redrawOn ? "false" : "true");
             this.segmentContinuityRedrawWrap.title = redrawOn ? t("tooltip.continuityRedraw") : "";
@@ -6454,9 +6478,10 @@ class MiniMaxH3DirectorEditor {
             this.timeline.output.continuityRedraw = redraw;
         }
         const exactOn = this.timeline?.output
-            ? (this.timeline.output.exactExport ?? this.timeline.output.exact_export ?? true) !== false
+            ? isExactExportEnabled(this.timeline.output)
             : true;
         if (this.outputExactExportWrap) {
+            this.outputExactExportWrap.classList.toggle("hidden", !masterOn);
             this.outputExactExportWrap.hidden = !masterOn;
             this.outputExactExportWrap.setAttribute("aria-hidden", masterOn ? "false" : "true");
             this.outputExactExportWrap.title = masterOn ? t("tooltip.exactExport") : "";
@@ -6467,6 +6492,7 @@ class MiniMaxH3DirectorEditor {
         }
         if (this.segmentContinuityKeepTailWrap) {
             // 「保完整」只在非精确导出时有意义
+            this.segmentContinuityKeepTailWrap.classList.toggle("hidden", !masterOn || exactOn);
             this.segmentContinuityKeepTailWrap.hidden = !masterOn || exactOn;
             this.segmentContinuityKeepTailWrap.setAttribute(
                 "aria-hidden", masterOn && !exactOn ? "false" : "true",
@@ -6489,9 +6515,9 @@ class MiniMaxH3DirectorEditor {
         const wrap = this.segMotionWrap;
         const cb = this.segMotionCb;
         if (!wrap || !cb) return;
-        const taskKey = this.getTaskKey?.() || "";
+        const selSeg = this.timeline.segments?.[this.selectedIndex ?? 0];
         const show = !this.isImageBatch() && !this.isFl2vMode()
-            && (taskKey === "v2v" || taskKey === "rv2v");
+            && this._isMotionTaskKey(this._segmentMotionTaskKey(selSeg));
         wrap.classList.toggle("hidden", !show);
         wrap.hidden = !show;
         this.segMotionDilateWrap?.classList.toggle("hidden", !show);
@@ -6510,17 +6536,17 @@ class MiniMaxH3DirectorEditor {
     syncGlobalMotionUI() {
         const row = this.globalMotionRow;
         if (!row) return;
-        const taskKey = this.getTaskKey?.() || "";
         const segs = this.timeline?.segments || [];
+        const idx = Math.min(this.selectedIndex ?? 0, Math.max(0, segs.length - 1));
+        const seg = segs[idx];
         const show = this.usesGlobalRefPanel()
             && !this.isImageBatch() && !this.isFl2vMode()
-            && (taskKey === "v2v" || taskKey === "rv2v")
-            && segs.length >= 1;
+            && segs.length >= 1
+            && this._isMotionTaskKey(this._segmentMotionTaskKey(seg));
         row.classList.toggle("hidden", !show);
         row.hidden = !show;
+        row.setAttribute("aria-hidden", show ? "false" : "true");
         if (!show) return;
-        const idx = Math.min(this.selectedIndex ?? 0, segs.length - 1);
-        const seg = segs[idx];
         if (this.globalMotionLabel) {
             this.globalMotionLabel.textContent = t("panel.motionSegmentN", { n: idx + 1 });
         }
@@ -6757,6 +6783,7 @@ class MiniMaxH3DirectorEditor {
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
+            exactExport: true,
         };
         if (key === "aspectRatio") {
             if (isCustomAspectRatio(value)) {
@@ -6815,6 +6842,8 @@ class MiniMaxH3DirectorEditor {
             this.timeline.output.continuityRedraw = snapContinuityRedraw(value);
         } else if (key === "continuityKeepTail") {
             this.timeline.output.continuityKeepTail = !!value;
+        } else if (key === "exactExport") {
+            this.timeline.output.exactExport = value !== false && value !== 0;
         }
         this.syncOutputUIFromTimeline();
         if (this.isFl2vMode()) updateFl2vDetailUI(this);
@@ -6933,6 +6962,7 @@ class MiniMaxH3DirectorEditor {
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
+            exactExport: true,
         };
         if (this.timeline.output.audioMode == null) {
             this.timeline.output.audioMode = "generate";
@@ -8893,18 +8923,33 @@ class MiniMaxH3DirectorEditor {
         };
     }
 
-    /** v2v/rv2v timelines: draw the per-clip 动作修复 badge. */
+    _isMotionTaskKey(taskKey) {
+        return taskKey === "v2v" || taskKey === "rv2v";
+    }
+
+    _segmentMotionTaskKey(seg) {
+        return resolveTaskKey(
+            seg?.taskType || this.timeline?.global?.taskType || this.getTaskKey() || "",
+        );
+    }
+
+    /** Any v2v/rv2v clip: draw the per-clip 动作修复 badge. */
     _showsMotionBadges() {
-        const taskKey = this.getTaskKey?.() || "";
-        return !this.isImageBatch() && !this.isFl2vMode()
-            && (taskKey === "v2v" || taskKey === "rv2v")
-            && (this.timeline?.segments?.length || 0) >= 1;
+        if (this.isImageBatch() || this.isFl2vMode()) return false;
+        const segs = this.timeline?.segments || [];
+        if (!segs.length) return false;
+        if (this._isMotionTaskKey(this.getTaskKey?.() || "")) return true;
+        return segs.some((s) => this._isMotionTaskKey(this._segmentMotionTaskKey(s)));
     }
 
     _motionBadgeGeometry(seg, width) {
         const x0 = this.frameToX(seg.start, width);
-        const shift = (this.isRunSelectEnabled() && this.getRunnableSegmentCount() >= 2)
-            ? RUN_CHECK_SIZE + 6 : 0;
+        const x1 = this.frameToX(seg.start + (seg.length || 0), width);
+        const pxW = Math.max(0, x1 - x0);
+        const showRunCheck = this.isRunSelectEnabled()
+            && this.getRunnableSegmentCount() >= 2
+            && pxW >= RUN_CHECK_SIZE + 8;
+        const shift = showRunCheck ? RUN_CHECK_SIZE + 13 : 0;
         const w = MOTION_BADGE_W, h = MOTION_BADGE_H;
         const boxX = x0 + 5 + shift;
         const boxY = TRACK_Y + 5;
@@ -8924,6 +8969,7 @@ class MiniMaxH3DirectorEditor {
         if (!this._showsMotionBadges()) return;
         const ctx = this.ctx;
         for (const seg of segs) {
+            if (!this._isMotionTaskKey(this._segmentMotionTaskKey(seg))) continue;
             const g = this._motionBadgeGeometry(seg, width);
             const on = !!seg.motionFix;
             const d = Math.max(0, Math.min(56, parseInt(seg.motionDilate, 10) || 0));
@@ -8947,6 +8993,7 @@ class MiniMaxH3DirectorEditor {
     toggleSegmentMotion(index) {
         const seg = this.timeline.segments?.[index];
         if (!seg) return;
+        if (!this._isMotionTaskKey(this._segmentMotionTaskKey(seg))) return;
         seg.motionFix = !seg.motionFix;
         if (this.selectedIndex !== index) this.selectedIndex = index;
         this.commit(false, { syncTimeline: true });
@@ -9210,6 +9257,16 @@ class MiniMaxH3DirectorEditor {
             }
         }
 
+        // 动作修复 badge wins over generic segment hits (top-left inside the clip).
+        if (this._showsMotionBadges() && y >= TRACK_Y && y <= trackBottom) {
+            for (let i = segs.length - 1; i >= 0; i--) {
+                const g = this._motionBadgeGeometry(segs[i], width);
+                if (x >= g.hitX0 && x <= g.hitX1 && y >= g.hitY0 && y <= g.hitY1) {
+                    return { type: "motion-badge", index: i };
+                }
+            }
+        }
+
         // Continuity pills sit on the seam (top of clip); win over split/edge in that pad.
         if (this._showsContinuityJoints() && y >= RULER_H && y <= TRACK_Y + CONT_JOINT_H + 24) {
             for (const joint of this._continuityJointList(segs)) {
@@ -9223,16 +9280,6 @@ class MiniMaxH3DirectorEditor {
                         b: joint.b,
                         on: joint.on,
                     };
-                }
-            }
-        }
-
-        // 动作修复 badge wins over generic segment hits (top-left inside the clip).
-        if (this._showsMotionBadges() && y >= TRACK_Y && y <= trackBottom) {
-            for (let i = segs.length - 1; i >= 0; i--) {
-                const g = this._motionBadgeGeometry(segs[i], width);
-                if (x >= g.hitX0 && x <= g.hitX1 && y >= g.hitY0 && y <= g.hitY1) {
-                    return { type: "motion-badge", index: i };
                 }
             }
         }
@@ -11017,6 +11064,7 @@ class MiniMaxH3DirectorEditor {
         const segKey = resolveTaskKey(liveSeg.taskType || this.timeline.global?.taskType || this.getTaskKey());
         this.segLabel.textContent = t("panel.segmentN", { n: this.selectedIndex + 1 });
         this.syncSegmentContinuityFromPrevUI();
+        this.syncSegmentMotionUI();
         this.syncSegmentRefImageSizeUI();
         this._updateSegInfoFromSegment(liveSeg);
         this.segPrompt.value = liveSeg.prompt || "";

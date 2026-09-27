@@ -639,11 +639,14 @@ def apply_motion_context(
         # Official: audio window independent; 0 follows video span. Example WF uses 24.
         a_frames = int(audio_ctx) if audio_ctx > 0 else int(span)
         # Align audio pin end with the video pin window (not export overshoot).
-        audio_end_limit = (
-            None
-            if audio_latent_explicit
-            else (pin_end_px if pin_end_px is not None else context_end_frame)
-        )
+        if audio_latent_explicit:
+            # Slowed audio latent: slice up to the previous export end (not the
+            # sample's align remainder). None still means absolute tail.
+            audio_end_limit = context_end_frame
+        else:
+            audio_end_limit = (
+                pin_end_px if pin_end_px is not None else context_end_frame
+            )
         if pin_audio_latent is not None:
             audio_latent, ref_audio_t, overhang = _audio_tail_from_latent(
                 pin_audio_latent, a_frames, end_frame=audio_end_limit

@@ -729,6 +729,9 @@ def execute_director_plan_core(
         if gap_entries:
             try:
                 reports.append(plan_length_audit(gap_entries))
+                reports.append(
+                    "  （审计为采样前估算；不含相位裁剪与源片段不足导致的偏差。）"
+                )
             except Exception:
                 pass
         if exact_on:
@@ -1256,6 +1259,11 @@ def execute_director_plan_core(
                         f"Seg #{seg.index + 1}: 源 latent 部分去噪初始化 "
                         f"(denoise {first_pass_denoise:.2f}, init {want}f slowed)"
                     )
+                    if first_pass_sigmas is not None:
+                        reports.append(
+                            f"Seg #{seg.index + 1}: 外接 SIGMAS 提供完整噪声表，"
+                            "source_init 仅作为初值，denoise 比例不生效"
+                        )
                 except Exception as exc:
                     if not bool((motion_cfg or {}).get("fail_fallback", True)):
                         raise
@@ -1283,12 +1291,28 @@ def execute_director_plan_core(
             pin_audio_context_latent = None
             pin_context_audio = prev_audio
             pin_audio_length = DEFAULT_AUDIO_CONTEXT_FRAMES
-            if motion_plan is not None or prev_motion_meta is not None:
+            if pixel_pin_real:
+                # Gapped real-time seam: pin the previous export tail by VAE
+                # re-encode; this branch must stay outside the motion condition
+                # below (pixel_pin_real implies both sides are real-time).
+                pin_context_latent = None
+                pin_context_frames = prev_tail
+                pin_context_length = int(context_n)
+                pin_context_end = None
+                log.info(
+                    "Director continuity: seg #%d pixel re-encode pin (%df, "
+                    "no prev-export trim)",
+                    seg.index + 1,
+                    context_n,
+                )
+            elif motion_plan is not None or prev_motion_meta is not None:
                 # Timebase conversion across a retimed boundary: pin from decoded
                 # pixels (re-encoded). Pin frames are never exported, so the VAE
-                # round-trip cannot soften the final clip.
+                # round-trip cannot soften the final clip. context_end_frame is
+                # kept so a slowed audio latent slices up to the export end, not
+                # the sample's align remainder.
                 pin_context_latent = None
-                pin_context_end = None
+                pin_context_end = prev_end_frame
                 if motion_plan is not None:
                     if motion_pin_frames is None or not motion_pin_window:
                         use_motion_context = False
@@ -1298,47 +1322,41 @@ def execute_director_plan_core(
                     else:
                         pin_context_frames = motion_pin_frames
                         pin_context_length = int(motion_pin_window)
-                        if decode_audio:
-                            d = max(1, int(motion_plan.get("dilate") or 1))
-                            if prev_motion_meta is not None and prev_av is not None:
-                                # Both slowed with the same time flow: latent slice.
-                                pin_audio_context_latent = prev_av
-                            else:
-                                # Prev real-time: expand its recovered audio ×d so
-                                # the pin matches the slowed clock.
-                                slowed_audio, slowed_n = expand_audio_for_slowed_pin(
-                                    prev_audio,
-                                    dilate=d,
-                                    slowed_frames=snap_context_frames(
-                                        plan.continuity_overlap_frames
-                                    ),
-                                    fps=float(plan.frame_rate or 24),
+                        d = max(1, int(motion_plan.get("dilate") or 1))
+                        if prev_motion_meta is not None and prev_av is not None:
+                            # Both slowed: slice the previous slowed AV latent audio.
+                            pin_audio_context_latent = prev_av
+                        else:
+                            # Prev real-time (any audio mode): expand its tail ×d so
+                            # the pin matches the slowed clock.
+                            slowed_audio, slowed_n = expand_audio_for_slowed_pin(
+                                pin_context_audio,
+                                dilate=d,
+                                slowed_frames=snap_context_frames(
+                                    plan.continuity_overlap_frames
+                                ),
+                                fps=float(plan.frame_rate or 24),
+                            )
+                            if slowed_audio is not None and slowed_n > 0:
+                                pin_context_audio = slowed_audio
+                                pin_audio_length = int(slowed_n)
+                                reports.append(
+                                    f"Seg #{seg.index + 1}: 上一段音频 ×{d} 展开为放慢钉入"
+                                    f"（{slowed_n}f slowed）"
                                 )
-                                if slowed_audio is not None and slowed_n > 0:
-                                    pin_context_audio = slowed_audio
-                                    pin_audio_length = int(slowed_n)
-                                    reports.append(
-                                        f"Seg #{seg.index + 1}: 生成音频 ×{d} 展开为放慢钉入"
-                                        f"（{slowed_n}f slowed）"
-                                    )
-                                    log.info(
-                                        "Director continuity: seg #%d generate-audio pin "
-                                        "expanded x%d -> %df slowed",
-                                        seg.index + 1,
-                                        d,
-                                        slowed_n,
-                                    )
-                                else:
-                                    pin_audio = False
-                                    reports.append(
-                                        f"Seg #{seg.index + 1}: 无可展开的上一段音频，"
-                                        "生成音频不钉入（视频照常钉入）"
-                                    )
-                elif pixel_pin_real:
-                    pin_context_latent = None
-                    pin_context_frames = prev_tail
-                    pin_context_length = int(context_n)
-                    pin_context_end = None
+                                log.info(
+                                    "Director continuity: seg #%d audio pin "
+                                    "expanded x%d -> %df slowed",
+                                    seg.index + 1,
+                                    d,
+                                    slowed_n,
+                                )
+                            else:
+                                pin_audio = False
+                                reports.append(
+                                    f"Seg #{seg.index + 1}: 无可展开的上一段音频，"
+                                    "音频不钉入（视频照常钉入）"
+                                )
                 else:
                     if prev_tail is None or int(prev_tail.shape[0]) < 1:
                         use_motion_context = False
@@ -1936,8 +1954,19 @@ def execute_director_plan_core(
                 # latent must not be re-pinned from a real-time prev latent.
                 trim_frames=0 if motion_plan is not None else trim_frames,
                 on_pass=_export_refine_pass if mp4_run_dir is not None else None,
-                prev_refine_av=completed_av_latents.get(prev_idx) if prev_idx >= 0 else None,
-                prev_end_frame=prev_end_frame,
+                # Mixed timebase (prev slowed, this segment real-time): never
+                # re-pin from the slowed latent; slice this clip's real head or
+                # the recovered prev tail instead.
+                prev_refine_av=(
+                    None
+                    if (motion_plan is None and prev_motion_meta is not None)
+                    else (completed_av_latents.get(prev_idx) if prev_idx >= 0 else None)
+                ),
+                prev_end_frame=(
+                    None
+                    if (motion_plan is None and prev_motion_meta is not None)
+                    else prev_end_frame
+                ),
                 prev_tail=prev_tail,
                 shift_cache=shift_cache,
             )
@@ -2237,9 +2266,14 @@ def execute_director_plan_core(
         if clear_vram_between_segments and progress_index < seg_total - 1:
             cleanup_segment_vram(enabled=True)
 
+        len_note = (
+            f"{int(chunk.shape[0])}f (slowed {int(target_len)}f)"
+            if motion_plan is not None
+            else f"{int(chunk.shape[0])}f"
+        )
         reports.append(
             f"Segment {ui_idx + 1}/{timeline_seg_total}: {task_hint} "
-            f"({target_len} frames, seed={seed}"
+            f"({len_note}, seed={seed}"
             f"{', ' + refine_note if refine_note else ''})"
         )
         reports.append(
@@ -2380,23 +2414,9 @@ def execute_director_plan_core(
                 cached_motion = cached_handoff.get("motion")
                 if isinstance(cached_motion, dict):
                     completed_motion[seg.index] = cached_motion
-                    if pre_fill is not None:
-                        # .pre frames are slowed; recover them for the pre output.
-                        recovered_pre, _recover_note = _motion_recover_safe(
-                            pre_fill,
-                            {
-                                "hold_map": cached_motion.get("hold_map") or [],
-                                "dilate": int(cached_motion.get("dilate") or 1),
-                            },
-                            trim_slowed=int(cached_motion.get("slowed_trim") or 0),
-                            real_frames=int(
-                                cached_motion.get("real_frames")
-                                or getattr(seg, "frame_count", 0)
-                                or 0
-                            ),
-                            fail_fallback=True,
-                        )
-                        completed_pre_refine[seg.index] = recovered_pre
+                # Motion .pre frames are already recovered to real time inside
+                # load_first_pass_frames_stale (using the .pre handoff), so
+                # completed_pre_refine above needs no further recovery.
             audio_note = ", +audio" if cached_audio is not None else ", no audio cache"
             stale_note = ", stale fingerprint" if used_stale else ""
             reports.append(

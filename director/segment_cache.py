@@ -224,8 +224,15 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
     }
     if plan.continuity_enabled and bool(getattr(plan, "continuity_keep_tail", True)):
         payload["continuity_keep_tail"] = True
-    # Exact export changes per-segment export length (one-time cache refresh).
-    payload["exact_export"] = bool(getattr(plan, "exact_export", True))
+    # Exact export only changes continuity-pinned segment lengths; scope the key
+    # so non-pinned segments and continuity-off plans keep their caches.
+    pinned = (
+        bool(getattr(plan, "continuity_enabled", False))
+        and int(getattr(seg, "index", 0)) > 0
+        and bool(getattr(seg, "continuity_from_prev", True))
+    )
+    if pinned:
+        payload["exact_export"] = bool(getattr(plan, "exact_export", True))
     witness = getattr(plan, "external_groups_witness", None)
     if isinstance(witness, dict):
         # This segment's own group only. The whole chain is deliberately *not*
@@ -881,9 +888,27 @@ def _trim_stale_first_pass_frames(
     match_len: int | None,
 ) -> torch.Tensor | None:
     """Match in-memory first-pass export: drop context prefix, then crop length."""
-    if isinstance((handoff or {}).get("motion"), dict):
-        # Motion first-pass frames are slowed; the executor trims the slowed
-        # prefix and recovers group starts with the stored hold map.
+    motion = (handoff or {}).get("motion")
+    if isinstance(motion, dict):
+        # Motion first-pass frames are slowed: trim the slowed prefix and
+        # recover group starts here so callers always get real-time frames.
+        try:
+            from .motion_retime import recover_after_slowed_trim
+
+            real = int(motion.get("real_frames") or 0) or int(frames.shape[0])
+            frames = recover_after_slowed_trim(
+                frames,
+                motion.get("hold_map") or [],
+                trim_slowed=int(motion.get("slowed_trim") or 0),
+                dilate=int(motion.get("dilate") or 1),
+                real_frames=real,
+            )
+        except Exception as exc:
+            log.warning("Motion first-pass frame recovery failed: %s", exc)
+            return None
+        want = int(match_len or 0)
+        if want > 0 and int(frames.shape[0]) > want:
+            frames = frames[:want]
         return frames
     fps = float(getattr(plan, "frame_rate", 24) or 24)
     trim_frames = int((handoff or {}).get("trim_frames") or 0)

@@ -186,18 +186,6 @@ def resolve_exact_export(output_block: dict | None) -> bool:
     return _flag_true(raw, True)
 
 
-def resolve_max_gap_frames(output_block: dict | None) -> int:
-    out = output_block if isinstance(output_block, dict) else {}
-    raw = out.get("maxGapFrames")
-    if raw is None:
-        raw = out.get("max_gap_frames")
-    try:
-        n = int(raw)
-    except (TypeError, ValueError):
-        n = 8
-    return max(0, min(56, n))
-
-
 def resolve_ref_image_size(seg_or_data=None, plan_or_timeline=None) -> str:
     """Per-segment mode; legacy ``output.refImageSize`` as fallback."""
     raw = None
@@ -340,9 +328,6 @@ class DirectorPlan:
     # Source-audio-safe length normalization: export exactly the source window
     # and drop the pin phase gap from the previous export (video+audio together).
     exact_export: bool = True
-    # Deprecated: gapped seams now pixel-re-encode instead of hard-cutting.
-    # Kept so existing timeline JSON keeps loading.
-    max_gap_frames: int = 8
     # Optional Motion Fix defaults (node pack); per-segment flags live on SegmentPlan.
     motion_fix: dict | None = None
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
@@ -1039,7 +1024,6 @@ def build_director_plan(
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
         exact_export=resolve_exact_export(output_block),
-        max_gap_frames=resolve_max_gap_frames(output_block),
         global_ref_audios=global_ref_audios,
     )
 

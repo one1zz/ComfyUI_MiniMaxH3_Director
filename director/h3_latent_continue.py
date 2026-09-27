@@ -246,11 +246,14 @@ def apply_latent_continue(
         a_frames = int(audio_context_length) if audio_context_length else DEFAULT_AUDIO_CONTEXT_FRAMES
         if a_frames <= 0:
             a_frames = int(span)
-        audio_end_limit = (
-            None
-            if audio_latent_explicit
-            else (pin_end_px if pin_end_px is not None else context_end_frame)
-        )
+        if audio_latent_explicit:
+            # Slowed audio latent: slice up to the export end when the caller
+            # provides it; None still means the absolute latent tail.
+            audio_end_limit = context_end_frame
+        else:
+            audio_end_limit = (
+                pin_end_px if pin_end_px is not None else context_end_frame
+            )
         if pin_audio_latent is not None:
             audio_tail, audio_pin_t, _overhang = _audio_tail_from_latent(
                 pin_audio_latent, a_frames, end_frame=audio_end_limit
