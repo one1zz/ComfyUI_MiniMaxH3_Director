@@ -340,7 +340,8 @@ class DirectorPlan:
     # Source-audio-safe length normalization: export exactly the source window
     # and drop the pin phase gap from the previous export (video+audio together).
     exact_export: bool = True
-    # Disable continuity for a seam when its phase gap exceeds this many frames.
+    # Deprecated: gapped seams now pixel-re-encode instead of hard-cutting.
+    # Kept so existing timeline JSON keeps loading.
     max_gap_frames: int = 8
     # Optional Motion Fix defaults (node pack); per-segment flags live on SegmentPlan.
     motion_fix: dict | None = None

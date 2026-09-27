@@ -582,6 +582,67 @@ def recover_held_audio(
     return {"waveform": out, "sample_rate": sr}
 
 
+def expand_audio_for_slowed_pin(
+    audio: dict | None,
+    *,
+    dilate: int,
+    slowed_frames: int,
+    fps: float = 24.0,
+) -> tuple[dict | None, int]:
+    """Take a real-time audio tail and repeat each frame ×d for a slowed pin.
+
+    Returns ``(audio_dict, slowed_frames_used)`` or ``(None, 0)``. Used when the
+    previous segment is real-time but the current one is slowed and the audio
+    mode is generate (the pin has to live on the slowed clock).
+    """
+    if not isinstance(audio, dict):
+        return None, 0
+    wave = audio.get("waveform")
+    if not torch.is_tensor(wave) or wave.numel() <= 0:
+        return None, 0
+    d = max(1, int(dilate))
+    fps = float(fps or 24.0)
+    sr = int(audio.get("sample_rate") or 32000)
+    want_slowed = max(1, int(slowed_frames))
+    real_n = max(1, want_slowed // d)
+    slowed_n = real_n * d
+    wave = wave.detach().float()
+    if wave.ndim == 1:
+        wave = wave.unsqueeze(0)
+    if wave.ndim == 2:
+        wave = wave.unsqueeze(0)
+    target = max(1, int(round(slowed_n / fps * sr)))
+    out = wave.new_zeros((*wave.shape[:-1], target))
+    base = max(0, int(wave.shape[-1]) - int(round(real_n / fps * sr)))
+    pos = 0
+    for j in range(real_n):
+        length = int(round((j + 1) / fps * sr)) - int(round(j / fps * sr))
+        if length <= 0:
+            continue
+        s0 = base + int(round(j / fps * sr))
+        chunk = wave[..., s0 : s0 + length]
+        if int(chunk.shape[-1]) < length:
+            chunk = torch.cat(
+                [
+                    chunk,
+                    wave.new_zeros((*wave.shape[:-1], length - int(chunk.shape[-1]))),
+                ],
+                dim=-1,
+            )
+        elif int(chunk.shape[-1]) > length:
+            chunk = chunk[..., :length]
+        for _copy in range(d):
+            end = min(target, pos + length)
+            if end > pos:
+                out[..., pos:end] = chunk[..., : end - pos]
+            pos += length
+        if pos >= target:
+            break
+    if pos <= 0:
+        return None, 0
+    return {"waveform": out, "sample_rate": sr}, int(slowed_n)
+
+
 def plan_length_audit(
     entries: Iterable[tuple[int, int, int]],
 ) -> str:

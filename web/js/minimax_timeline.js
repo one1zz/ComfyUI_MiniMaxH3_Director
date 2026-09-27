@@ -258,6 +258,7 @@ function normalizeOutputContinuity(output = {}) {
             output.continuityRedraw ?? output.continuity_redraw ?? DEFAULT_CONTINUITY_REDRAW,
         ),
         continuityKeepTail: isContinuityKeepTail(output),
+        exactExport: (output.exactExport ?? output.exact_export ?? true) !== false,
         audioMode: normalizeAudioMode(output.audioMode ?? output.audio_mode),
         refImageSize: normalizeRefImageSize(output.refImageSize ?? output.ref_image_size),
     };
@@ -1927,6 +1928,7 @@ function parseTimeline(raw, totalFrames, fps) {
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
+            exactExport: true,
         },
         runSelectEnabled: false,
         runSelection: [],
@@ -1998,6 +2000,7 @@ function parseTimeline(raw, totalFrames, fps) {
             continuityMode: data.output?.continuityMode ?? data.output?.continuity_mode,
             continuityRedraw: data.output?.continuityRedraw ?? data.output?.continuity_redraw,
             continuityKeepTail: data.output?.continuityKeepTail ?? data.output?.continuity_keep_tail,
+            exactExport: (data.output?.exactExport ?? data.output?.exact_export ?? true) !== false,
         });
         // Infer aspectRatio from saved width/height when older payloads omitted the label.
         if (!data.output.aspectRatio && data.output.width > 0 && data.output.height > 0) {
@@ -2986,6 +2989,10 @@ class MiniMaxH3DirectorEditor {
                     <input type="checkbox" data-r="segment-continuity-keep-tail" checked>
                     <span data-i18n="output.continuityKeepTail">保完整</span>
                 </label>
+                <label data-r="output-exact-export-wrap" hidden data-i18n-title="tooltip.exactExport">
+                    <input type="checkbox" data-r="output-exact-export" checked>
+                    <span data-i18n="output.exactExport">精确导出</span>
+                </label>
             </span>
             <button type="button" class="bd-btn bd-btn-live-preview" data-a="live-tae-preview" data-i18n="toolbar.liveTaePreview" data-i18n-title="tooltip.liveTaePreview">实时预览</button>`;
         this.mainBody.appendChild(outputBar);
@@ -3323,6 +3330,8 @@ class MiniMaxH3DirectorEditor {
         this.segmentContinuityRedraw = this.root.querySelector('[data-r="segment-continuity-redraw"]');
         this.segmentContinuityKeepTailWrap = this.root.querySelector('[data-r="segment-continuity-keep-tail-wrap"]');
         this.segmentContinuityKeepTail = this.root.querySelector('[data-r="segment-continuity-keep-tail"]');
+        this.outputExactExportWrap = this.root.querySelector('[data-r="output-exact-export-wrap"]');
+        this.outputExactExport = this.root.querySelector('[data-r="output-exact-export"]');
         this.outPreview = this.root.querySelector('[data-r="out-preview"]');
         this.runStatusEl = this.root.querySelector('[data-r="run-status"]');
         this.runTitleEl = this.root.querySelector('[data-r="run-title"]');
@@ -3649,6 +3658,13 @@ class MiniMaxH3DirectorEditor {
             this.segmentContinuityKeepTail.onchange = () => {
                 this.onOutputField("continuityKeepTail", this.segmentContinuityKeepTail.checked);
             };
+        }
+        if (this.outputExactExport) {
+            this.outputExactExport.onchange = () => {
+                this.onOutputField("exactExport", this.outputExactExport.checked);
+                this.updateSegmentContinuityUI();
+            };
+            this.outputExactExportWrap?.setAttribute("title", t("tooltip.exactExport"));
         }
         if (this.segContinuityFromPrevCb) {
             this.segContinuityFromPrevCb.onchange = () => {
@@ -6437,10 +6453,26 @@ class MiniMaxH3DirectorEditor {
             this.segmentContinuityRedraw.value = String(redraw);
             this.timeline.output.continuityRedraw = redraw;
         }
+        const exactOn = this.timeline?.output
+            ? (this.timeline.output.exactExport ?? this.timeline.output.exact_export ?? true) !== false
+            : true;
+        if (this.outputExactExportWrap) {
+            this.outputExactExportWrap.hidden = !masterOn;
+            this.outputExactExportWrap.setAttribute("aria-hidden", masterOn ? "false" : "true");
+            this.outputExactExportWrap.title = masterOn ? t("tooltip.exactExport") : "";
+        }
+        if (this.outputExactExport && this.timeline?.output) {
+            this.outputExactExport.checked = exactOn;
+            this.timeline.output.exactExport = exactOn;
+        }
         if (this.segmentContinuityKeepTailWrap) {
-            this.segmentContinuityKeepTailWrap.hidden = !masterOn;
-            this.segmentContinuityKeepTailWrap.setAttribute("aria-hidden", masterOn ? "false" : "true");
-            this.segmentContinuityKeepTailWrap.title = masterOn ? t("tooltip.continuityKeepTail") : "";
+            // 「保完整」只在非精确导出时有意义
+            this.segmentContinuityKeepTailWrap.hidden = !masterOn || exactOn;
+            this.segmentContinuityKeepTailWrap.setAttribute(
+                "aria-hidden", masterOn && !exactOn ? "false" : "true",
+            );
+            this.segmentContinuityKeepTailWrap.title =
+                masterOn && !exactOn ? t("tooltip.continuityKeepTail") : "";
         }
         if (this.segmentContinuityKeepTail && this.timeline?.output) {
             const keepTail = isContinuityKeepTail(this.timeline.output);

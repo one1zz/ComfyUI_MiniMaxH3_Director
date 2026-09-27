@@ -611,6 +611,49 @@ def finalize_director_outputs(
         audio_mode=audio_mode,
         source_fallback=source_fallback,
     )
+    # Segments mode: one lossless timeline WAV next to the segment mp4s. The
+    # per-file AAC primings make lossless mp4 concatenation click at every join;
+    # muxing this WAV over the concatenated video avoids that entirely.
+    if export_segments and getattr(plan, "segment_mp4_run_dir", None) and audio_out:
+        try:
+            from pathlib import Path as _Path
+
+            from ..director.audio_export import _pad_or_trim_audio_to_frames
+            from ..lib.video_export import write_audio_wav
+
+            fps_w = float(getattr(plan, "frame_rate", 24) or 24)
+            sr_w = 32000
+            for aud in audio_out:
+                if isinstance(aud, dict) and int(aud.get("sample_rate") or 0) > 0:
+                    sr_w = int(aud["sample_rate"])
+                    break
+            counts_w = segment_frame_counts or [int(s.shape[0]) for s in images_out]
+            parts_w = []
+            for i, aud in enumerate(audio_out):
+                fc = int(counts_w[i]) if i < len(counts_w) else 0
+                part = _pad_or_trim_audio_to_frames(
+                    aud if isinstance(aud, dict) and aud.get("waveform") is not None else None,
+                    frame_count=fc,
+                    fps=fps_w,
+                    sample_rate=sr_w,
+                )
+                wave = part.get("waveform") if isinstance(part, dict) else None
+                if isinstance(wave, torch.Tensor) and wave.numel() > 0:
+                    parts_w.append(wave)
+            if parts_w:
+                merged = torch.cat(parts_w, dim=-1)
+                dest = _Path(plan.segment_mp4_run_dir) / "director_timeline.wav"
+                written = write_audio_wav(
+                    dest, {"waveform": merged, "sample_rate": sr_w}
+                )
+                if written:
+                    report += (
+                        f"\n\nSegment audio (lossless): {written} — "
+                        "无损拼接请用各段 seg_*.wav 或这条整轨 WAV 重新封装，"
+                        "不要直接拼接分段 mp4 的 AAC。"
+                    )
+        except Exception as exc:
+            log.warning("Director merged timeline WAV skipped: %s", exc)
 
     split_source_outputs = export_segments or (is_batch and not video_batch)
     if export_source_images:

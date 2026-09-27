@@ -53,6 +53,21 @@ def _pad_even_hw(rgb: np.ndarray) -> np.ndarray:
     return out
 
 
+def write_audio_wav(path: str | Path, audio: dict[str, Any] | None) -> Path | None:
+    """Write an AUDIO dict (float waveform) as 16-bit PCM WAV. None when empty.
+
+    Segment exports mux AAC into each mp4; concatenating those files adds AAC
+    priming/padding at every join. The sidecar WAV is the lossless path.
+    """
+    if not audio or not isinstance(audio, dict):
+        return None
+    dest = Path(path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not _write_wav(dest, audio):
+        return None
+    return dest
+
+
 def _write_wav(path: Path, audio: dict[str, Any]) -> bool:
     wave_t = audio.get("waveform")
     if not isinstance(wave_t, torch.Tensor) or wave_t.numel() <= 0:

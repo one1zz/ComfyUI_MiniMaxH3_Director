@@ -145,6 +145,27 @@ def maybe_export_segment_mp4(
             _suffix_log_label(suffix),
             path,
         )
+        # Lossless audio sidecar: AAC primings make lossless mp4 concat click at
+        # every join; use these WAVs (or director_timeline.wav) for the final mux.
+        if audio:
+            try:
+                from ..lib.video_export import write_audio_wav
+
+                wav = write_audio_wav(dest.with_suffix(".wav"), audio)
+                if wav:
+                    log.info(
+                        "MiniMax H3 Director segment #%d %sWAV saved: %s",
+                        int(seg.index) + 1,
+                        _suffix_log_label(suffix),
+                        wav,
+                    )
+            except Exception as exc:
+                log.warning(
+                    "Segment #%d %sWAV sidecar skipped: %s",
+                    int(seg.index) + 1,
+                    _suffix_log_label(suffix),
+                    exc,
+                )
         return str(path)
     except Exception as exc:
         log.warning(
