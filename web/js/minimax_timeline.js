@@ -249,7 +249,7 @@ function snapContinuityFrames(raw) {
 
 function isExactExportEnabled(output) {
     const raw = output?.exactExport ?? output?.exact_export;
-    if (raw === undefined || raw === null) return true;
+    if (raw === undefined || raw === null) return false; // default off (opt-in)
     if (raw === false || raw === 0) return false;
     if (typeof raw === "string") {
         const s = raw.trim().toLowerCase();
@@ -260,7 +260,7 @@ function isExactExportEnabled(output) {
 
 function isRefPadToGridEnabled(output) {
     const raw = output?.refPadToGrid ?? output?.ref_pad_to_grid;
-    if (raw === undefined || raw === null) return true;
+    if (raw === undefined || raw === null) return false; // default off (opt-in)
     if (raw === false || raw === 0) return false;
     if (typeof raw === "string") {
         const s = raw.trim().toLowerCase();
@@ -269,9 +269,14 @@ function isRefPadToGridEnabled(output) {
     return !!raw;
 }
 
+function hasFlagSet(output, key, altKey) {
+    const out = output || {};
+    return out[key] !== undefined || out[altKey] !== undefined;
+}
+
 function normalizeOutputContinuity(output = {}) {
     const rawOverlap = output.continuityOverlapFrames ?? output.continuity_overlap_frames ?? DEFAULT_CONTINUITY_FRAMES;
-    return {
+    const out = {
         ...output,
         continuityEnabled: isContinuityEnabled(output),
         continuityOverlapFrames: snapContinuityFrames(rawOverlap),
@@ -280,11 +285,19 @@ function normalizeOutputContinuity(output = {}) {
             output.continuityRedraw ?? output.continuity_redraw ?? DEFAULT_CONTINUITY_REDRAW,
         ),
         continuityKeepTail: isContinuityKeepTail(output),
-        exactExport: isExactExportEnabled(output),
         audioMode: normalizeAudioMode(output.audioMode ?? output.audio_mode),
         refImageSize: normalizeRefImageSize(output.refImageSize ?? output.ref_image_size),
-        refPadToGrid: isRefPadToGridEnabled(output),
     };
+    // Preserve tri-state: only emit these flags when the user actually set
+    // them, so the backend can auto-enable exact export for source audio +
+    // segment continuity (and otherwise keep the legacy default off).
+    if (hasFlagSet(output, "exactExport", "exact_export")) {
+        out.exactExport = isExactExportEnabled(output);
+    }
+    if (hasFlagSet(output, "refPadToGrid", "ref_pad_to_grid")) {
+        out.refPadToGrid = isRefPadToGridEnabled(output);
+    }
+    return out;
 }
 
 function stripTimelineContinuityRootFields(timeline) {
@@ -1955,7 +1968,6 @@ function parseTimeline(raw, totalFrames, fps) {
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
-            exactExport: true,
         },
         runSelectEnabled: false,
         runSelection: [],
@@ -2027,8 +2039,10 @@ function parseTimeline(raw, totalFrames, fps) {
             continuityMode: data.output?.continuityMode ?? data.output?.continuity_mode,
             continuityRedraw: data.output?.continuityRedraw ?? data.output?.continuity_redraw,
             continuityKeepTail: data.output?.continuityKeepTail ?? data.output?.continuity_keep_tail,
-            exactExport: isExactExportEnabled(data.output),
-            refPadToGrid: isRefPadToGridEnabled(data.output),
+            ...(hasFlagSet(data.output, "exactExport", "exact_export")
+                ? { exactExport: isExactExportEnabled(data.output) } : {}),
+            ...(hasFlagSet(data.output, "refPadToGrid", "ref_pad_to_grid")
+                ? { refPadToGrid: isRefPadToGridEnabled(data.output) } : {}),
         });
         // Infer aspectRatio from saved width/height when older payloads omitted the label.
         if (!data.output.aspectRatio && data.output.width > 0 && data.output.height > 0) {
@@ -2990,7 +3004,7 @@ class MiniMaxH3DirectorEditor {
                 <option value="segments" data-i18n="output.exportMode.segments">分段导出</option>
             </select>
             <label data-r="out-ref-pad-wrap" data-i18n-title="tooltip.refPadToGrid">
-                <input type="checkbox" data-r="out-ref-pad" checked>
+                <input type="checkbox" data-r="out-ref-pad">
                 <span data-i18n="output.refPadToGrid">参考补齐</span>
             </label>
             <datalist id="motion-dilate-presets">
@@ -3029,7 +3043,7 @@ class MiniMaxH3DirectorEditor {
                     <span data-i18n="output.continuityKeepTail">保完整</span>
                 </label>
                 <label data-r="output-exact-export-wrap" hidden data-i18n-title="tooltip.exactExport">
-                    <input type="checkbox" data-r="output-exact-export" checked>
+                    <input type="checkbox" data-r="output-exact-export">
                     <span data-i18n="output.exactExport">精确导出</span>
                 </label>
             </span>
@@ -6362,8 +6376,6 @@ class MiniMaxH3DirectorEditor {
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
-            exactExport: true,
-            refPadToGrid: true,
         };
         // Prefer ResolutionSelector fields; backfill from width/height when missing.
         // Custom keeps explicit width/height and does not recompute from megapixels.
@@ -6400,8 +6412,9 @@ class MiniMaxH3DirectorEditor {
         if (this.outMaxFrames) this.outMaxFrames.value = String(out.maxExportFrames ?? 0);
         if (this.outExportMode) this.outExportMode.value = out.exportMode === "segments" ? "segments" : "all";
         if (this.outRefPadCb) {
+            // Do not write the key here: unset stays unset so the backend can
+            // apply its auto policy. Only the onchange handler opts in explicitly.
             this.outRefPadCb.checked = isRefPadToGridEnabled(out);
-            this.timeline.output.refPadToGrid = this.outRefPadCb.checked;
         }
         if (this.outAudioMode) {
             const am = normalizeAudioMode(out.audioMode);
@@ -6510,9 +6523,14 @@ class MiniMaxH3DirectorEditor {
             this.segmentContinuityRedraw.value = String(redraw);
             this.timeline.output.continuityRedraw = redraw;
         }
+        const _outForExact = this.timeline?.output || {};
+        const _exactSet = hasFlagSet(_outForExact, "exactExport", "exact_export");
+        const _autoExact = !_exactSet
+            && isContinuityEnabled(_outForExact)
+            && String(_outForExact.audioMode ?? _outForExact.audio_mode ?? "").trim().toLowerCase() === "source";
         const exactOn = this.timeline?.output
-            ? isExactExportEnabled(this.timeline.output)
-            : true;
+            ? (_exactSet ? isExactExportEnabled(this.timeline.output) : _autoExact)
+            : false;
         if (this.outputExactExportWrap) {
             this.outputExactExportWrap.classList.toggle("hidden", !masterOn);
             this.outputExactExportWrap.hidden = !masterOn;
@@ -6520,8 +6538,9 @@ class MiniMaxH3DirectorEditor {
             this.outputExactExportWrap.title = masterOn ? t("tooltip.exactExport") : "";
         }
         if (this.outputExactExport && this.timeline?.output) {
+            // Display only; the key is written solely by the onchange handler so
+            // an untouched switch lets the backend apply its auto policy.
             this.outputExactExport.checked = exactOn;
-            this.timeline.output.exactExport = exactOn;
         }
         if (this.segmentContinuityKeepTailWrap) {
             // 「保完整」只在非精确导出时有意义
@@ -6900,8 +6919,6 @@ class MiniMaxH3DirectorEditor {
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
-            exactExport: true,
-            refPadToGrid: true,
         };
         if (key === "aspectRatio") {
             if (isCustomAspectRatio(value)) {
@@ -7082,8 +7099,6 @@ class MiniMaxH3DirectorEditor {
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
-            exactExport: true,
-            refPadToGrid: true,
         };
         if (this.timeline.output.audioMode == null) {
             this.timeline.output.audioMode = "generate";

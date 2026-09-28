@@ -9,6 +9,7 @@ import {
 } from "./minimax_gen_timeline.js";
 import { injectExternalGroupsWitness } from "./minimax_external_witness.js";
 import { collectSelfLiftWitness } from "./minimax_selflift.js";
+import { collectMotionFixWitness } from "./minimax_motion.js";
 import { collectSemanticBridgeWitness } from "./minimax_semantic_bridge.js";
 
 const REFINE_CLASS = "MiniMaxH3DirectorRefine";
@@ -593,6 +594,7 @@ function cacheStatusPayload(director, refine) {
         // always reports those keys as diffs.
         selflift: collectSelfLiftWitness(director),
         semantic_bridge: collectSemanticBridgeWitness(director),
+        motion_fix: collectMotionFixWitness(director),
         refine: collectRefineWitness(refine),
     };
 }
