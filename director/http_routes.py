@@ -607,35 +607,24 @@ async def minimax_clear_segment_cache(request):
         return web.Response(status=500, text=str(exc))
 
 
-async def minimax_join_segments(request):
-    """Losslessly join the latest segmented export (video copy + PCM WAV audio)."""
+async def minimax_list_segment_runs(request):
+    """List recent segment-export runs for the standalone join node picker."""
     try:
         body = await request.json()
-    except Exception as exc:
-        return web.Response(status=400, text=f"Invalid JSON: {exc}")
-
-    node_id = str(body.get("node_id") or "").strip()
-    if not re.fullmatch(r"\d+", node_id):
-        return web.Response(status=400, text="Invalid Director node id.")
-
+    except Exception:
+        body = {}
     try:
-        from .segment_join import join_run_dir, latest_run_dir
+        limit = int(body.get("limit") or 40)
+    except (TypeError, ValueError):
+        limit = 40
+    try:
+        from .segment_join import list_segment_runs
 
-        run_dir = latest_run_dir(node_id)
-        if run_dir is None:
-            return web.json_response(
-                {"error": "没有找到分段导出目录：请先用「分段导出」跑一次。"},
-                status=400,
-            )
-        result = join_run_dir(run_dir)
-        log.info(
-            "MiniMax H3 Director lossless join: %s (%d segments)",
-            result.get("output"),
-            int(result.get("segments") or 0),
+        return web.json_response(
+            {"runs": list_segment_runs(limit=max(1, min(200, limit)))}
         )
-        return web.json_response({"ok": True, "run_dir": str(run_dir), **result})
     except Exception as exc:
-        log.warning("MiniMax H3 Director lossless join failed: %s", exc)
+        log.warning("MiniMax H3 Director list segment runs failed: %s", exc)
         return web.json_response({"error": str(exc)}, status=400)
 
 
@@ -694,8 +683,8 @@ def register_routes() -> bool:
     _register_route(
         routes,
         "POST",
-        "/minimax/director/join_segments",
-        minimax_join_segments,
+        "/minimax/director/list_segment_runs",
+        minimax_list_segment_runs,
     )
     from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
 

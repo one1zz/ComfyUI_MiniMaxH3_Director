@@ -667,13 +667,10 @@ def execute_director_plan_core(
     mp4_run_dir = new_segment_mp4_run_dir(plan)
     plan.segment_mp4_run_dir = str(mp4_run_dir) if mp4_run_dir is not None else None
     if mp4_run_dir is not None:
-        from .segment_join import remember_run_dir
-
-        remember_run_dir(node_id, mp4_run_dir)
         reports.append(f"Segment mp4 export dir: {mp4_run_dir}")
         reports.append(
-            "无损拼接：点输出栏「无损拼接」按钮（视频流 copy + seg_*.wav/timeline WAV，"
-            "PCM 不重编码），不要直接拼分段 mp4 的 AAC。"
+            "无损拼接：用独立节点「MiniMax H3 Director Join Segments」选择该目录"
+            "（视频流 copy + seg_*.wav/timeline WAV，PCM 不重编码）。"
         )
     if live_tae_preview:
         reports.append("Live preview: ON — 采样中 TAE 动态预览（成片看下游 CreateVideo / SaveVideo）。")

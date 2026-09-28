@@ -1,14 +1,17 @@
-"""Graph node: losslessly join a MiniMax H3 Director segment-export run.
+"""Standalone lossless-join node for MiniMax H3 Director segment exports.
 
-Unlike the Director output-bar button (latest run of that node), this node can
-join any historical run directory and does not need a Director node.
+The node never talks to an executing Director. It joins an explicit ordered
+file list when provided (the frontend picker writes it), otherwise resolves a
+run directory (empty = newest). Video streams are copied; audio is rebuilt from
+the per-segment ``seg_XXXX.wav`` sidecars or the run's ``director_timeline.wav``
+as PCM, so joins are click-free and lossless.
 """
 
 from __future__ import annotations
 
 import logging
 
-from ..director.segment_join import join_run_dir, resolve_run_dir
+from ..director.segment_join import join_from_spec
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.nodes.join")
 
@@ -16,7 +19,7 @@ _CATEGORY = "MiniMaxH3"
 
 
 class MiniMaxH3DirectorJoinSegments:
-    """Join segmented export: video stream copy + lossless PCM audio."""
+    """Join segment exports losslessly, from a directory or an ordered file list."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -30,6 +33,19 @@ class MiniMaxH3DirectorJoinSegments:
                         "tooltip": (
                             "分段导出目录（含 seg_XXXX.mp4）。可填父目录 "
                             "minimax_seg_export（取最新一次），留空取全局最新。"
+                            "上方列表选择了文件时忽略此项。"
+                        ),
+                    },
+                ),
+                "files": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "dynamicPrompts": False,
+                        "tooltip": (
+                            "手动顺序（每行一个绝对路径，顺序即拼接顺序）。"
+                            "上方的拖拽列表会自动写入这里；两者同时存在时以此为准。"
                         ),
                     },
                 ),
@@ -38,7 +54,15 @@ class MiniMaxH3DirectorJoinSegments:
                     {
                         "default": "director_joined",
                         "multiline": False,
-                        "tooltip": "输出文件名（不含扩展名），落在同一目录。",
+                        "tooltip": "输出文件名（不含扩展名）。",
+                    },
+                ),
+                "output_dir": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": False,
+                        "tooltip": "输出目录；留空则与第一个视频同目录。",
                     },
                 ),
             }
@@ -53,20 +77,19 @@ class MiniMaxH3DirectorJoinSegments:
     FUNCTION = "join"
     CATEGORY = _CATEGORY
     DESCRIPTION = (
-        "Losslessly join a MiniMax H3 Director segment export (any historical run "
-        "dir). Video streams use -c:v copy; audio is rebuilt from seg_*.wav or "
-        "director_timeline.wav as PCM, so joins have no AAC priming clicks. "
-        "Returns the joined file path and a report."
+        "Losslessly join MiniMax H3 Director segment exports (any historical run). "
+        "Video: -c:v copy. Audio: PCM rebuilt from seg_*.wav or director_timeline.wav "
+        "(no AAC priming clicks). Accepts an ordered file list from the drag-and-drop "
+        "picker, or a directory. Returns the joined path and a report with a duration "
+        "sanity check."
     )
 
-    def join(self, directory="", output_name="director_joined"):
-        run_dir = resolve_run_dir(directory)
-        result = join_run_dir(run_dir, output_name=output_name)
-        report = (
-            f"Segments: {int(result.get('segments') or 0)}\n"
-            f"Run dir: {run_dir}\n"
-            f"Audio: {result.get('audio')}\n"
-            f"Video: {result.get('output')}"
+    def join(self, directory="", files="", output_name="director_joined", output_dir=""):
+        result = join_from_spec(
+            directory=directory,
+            files_text=files,
+            output_name=output_name,
+            output_dir=output_dir,
         )
         log.info("MiniMax H3 Director join node wrote: %s", result.get("output"))
-        return (str(result.get("output") or ""), report)
+        return (str(result.get("output") or ""), str(result.get("report") or ""))

@@ -2989,8 +2989,6 @@ class MiniMaxH3DirectorEditor {
                 <option value="all" data-i18n="output.exportMode.all">全部导出</option>
                 <option value="segments" data-i18n="output.exportMode.segments">分段导出</option>
             </select>
-            <button type="button" class="bd-btn hidden" data-a="join-segments" data-i18n="toolbar.joinSegments" data-i18n-title="tooltip.joinSegments">无损拼接</button>
-            <span class="bd-meta hidden" data-r="join-status"></span>
             <label data-r="out-ref-pad-wrap" data-i18n-title="tooltip.refPadToGrid">
                 <input type="checkbox" data-r="out-ref-pad" checked>
                 <span data-i18n="output.refPadToGrid">参考补齐</span>
@@ -3331,8 +3329,6 @@ class MiniMaxH3DirectorEditor {
         this.segMotionMinus = this.root.querySelector('[data-r="seg-motion-minus"]');
         this.segMotionPlus = this.root.querySelector('[data-r="seg-motion-plus"]');
         this.segMotionDefault = this.root.querySelector('[data-r="seg-motion-default"]');
-        this.joinSegmentsBtn = this.root.querySelector('[data-a="join-segments"]');
-        this.joinStatus = this.root.querySelector('[data-r="join-status"]');
         this.segRefImageSizeWrap = this.root.querySelector('[data-r="seg-ref-image-size-wrap"]');
         this.segRefImageSize = this.root.querySelector('[data-r="seg-ref-image-size"]');
         this.segInfo = this.root.querySelector('[data-r="seg-info"]');
@@ -3782,12 +3778,6 @@ class MiniMaxH3DirectorEditor {
                 after: () => this.syncSegmentMotionUI(),
             });
             this.globalMotionDilate.setAttribute("title", t("tooltip.segmentMotionDilate"));
-        }
-        if (this.joinSegmentsBtn) {
-            this.joinSegmentsBtn.onclick = (e) => {
-                stopDomEvent(e);
-                void this.joinSegments();
-            };
         }
 
         this.genGlobalImg?.addEventListener("click", (e) => { stopDomEvent(e); this.pickGenSrcImage(true); });
@@ -6409,9 +6399,6 @@ class MiniMaxH3DirectorEditor {
         if (this.outH) this.outH.value = String(out.height ?? 480);
         if (this.outMaxFrames) this.outMaxFrames.value = String(out.maxExportFrames ?? 0);
         if (this.outExportMode) this.outExportMode.value = out.exportMode === "segments" ? "segments" : "all";
-        if (this.joinSegmentsBtn) {
-            this.joinSegmentsBtn.classList.toggle("hidden", out.exportMode !== "segments");
-        }
         if (this.outRefPadCb) {
             this.outRefPadCb.checked = isRefPadToGridEnabled(out);
             this.timeline.output.refPadToGrid = this.outRefPadCb.checked;
@@ -10086,40 +10073,6 @@ class MiniMaxH3DirectorEditor {
         el.textContent = msg;
         el.classList.toggle("ok", !!ok);
         el.classList.remove("hidden");
-    }
-
-    /** Lossless join of the latest segment-export run (video copy + WAV audio). */
-    async joinSegments() {
-        const setStatus = (text, kind = "") => {
-            if (!this.joinStatus) return;
-            this.joinStatus.textContent = text || "";
-            this.joinStatus.classList.toggle("hidden", !text);
-            this.joinStatus.style.color = kind === "ok" ? "#4fff8f" : kind === "err" ? "#f88" : "#aaa";
-        };
-        if (this.timeline?.output?.exportMode !== "segments") {
-            setStatus(t("join.needSegments"), "err");
-            return;
-        }
-        const nodeId = this.node?.id;
-        if (nodeId == null) {
-            setStatus(t("join.failed", { err: "node id missing" }), "err");
-            return;
-        }
-        setStatus(t("join.running"));
-        try {
-            const resp = await api.fetchApi("/minimax/director/join_segments", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ node_id: String(nodeId) }),
-            });
-            const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data?.error) {
-                throw new Error(data?.error || `HTTP ${resp.status}`);
-            }
-            setStatus(t("join.done", { path: data.output || "" }), "ok");
-        } catch (err) {
-            setStatus(t("join.failed", { err: err?.message || err }), "err");
-        }
     }
 
     async smartSplit() {
