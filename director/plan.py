@@ -186,6 +186,21 @@ def resolve_exact_export(output_block: dict | None) -> bool:
     return _flag_true(raw, True)
 
 
+def resolve_ref_pad_to_grid(output_block: dict | None) -> bool:
+    """Pad reference videos up to 17n+5 (hold last frame) before the official node.
+
+    The official ReferenceToVideo truncates then snaps the reference video DOWN
+    to 17n+5, silently dropping 1-16 tail frames per clip. Default on: pass an
+    up-aligned clip so the model sees the whole shot (a small held tail is the
+    cost). Timeline ``output.refPadToGrid=false`` restores stock behavior.
+    """
+    out = output_block if isinstance(output_block, dict) else {}
+    raw = out.get("refPadToGrid")
+    if raw is None:
+        raw = out.get("ref_pad_to_grid")
+    return _flag_true(raw, True)
+
+
 def resolve_ref_image_size(seg_or_data=None, plan_or_timeline=None) -> str:
     """Per-segment mode; legacy ``output.refImageSize`` as fallback."""
     raw = None
@@ -328,6 +343,9 @@ class DirectorPlan:
     # Source-audio-safe length normalization: export exactly the source window
     # and drop the pin phase gap from the previous export (video+audio together).
     exact_export: bool = True
+    # Reference videos: pad up to 17n+5 before the official node (its own snap
+    # is downward and silently drops 1-16 tail frames per clip).
+    ref_pad_to_grid: bool = True
     # Optional Motion Fix defaults (node pack); per-segment flags live on SegmentPlan.
     motion_fix: dict | None = None
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
@@ -1024,6 +1042,7 @@ def build_director_plan(
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
         exact_export=resolve_exact_export(output_block),
+        ref_pad_to_grid=resolve_ref_pad_to_grid(output_block),
         global_ref_audios=global_ref_audios,
     )
 
@@ -1227,6 +1246,10 @@ def plan_summary(plan: DirectorPlan) -> str:
         )
     export_label = "分段导出" if plan.export_mode == "segments" else "全部导出"
     lines.append(f"Export mode: {export_label}")
+    if getattr(plan, "ref_pad_to_grid", True):
+        lines.append(
+            "Reference video: 尾部补齐到 17n+5 再送入官方节点（避免其向下吸附丢尾帧）"
+        )
     if plan.continuity_enabled:
         pinned = [
             seg.index + 1

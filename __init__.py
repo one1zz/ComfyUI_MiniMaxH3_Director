@@ -9,6 +9,7 @@ from .nodes.conditioning import (
     MiniMaxH3DirectorPlannerConditioning,
 )
 from .nodes.director import MiniMaxH3Director
+from .nodes.director_join import MiniMaxH3DirectorJoinSegments
 from .nodes.director_refine import MiniMaxH3DirectorRefine
 from .nodes.director_motion import MiniMaxH3DirectorMotionFix
 from .nodes.director_selflift import MiniMaxH3DirectorSelfLift
@@ -22,6 +23,7 @@ from .nodes.director_groups import (
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3Director": MiniMaxH3Director,
+    "MiniMaxH3DirectorJoinSegments": MiniMaxH3DirectorJoinSegments,
     "MiniMaxH3DirectorRefine": MiniMaxH3DirectorRefine,
     "MiniMaxH3DirectorMotionFix": MiniMaxH3DirectorMotionFix,
     "MiniMaxH3DirectorSelfLift": MiniMaxH3DirectorSelfLift,
@@ -40,6 +42,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3Director": "MiniMaxH3Director",
+    "MiniMaxH3DirectorJoinSegments": "MiniMax H3 Director Join Segments",
     "MiniMaxH3DirectorRefine": "MiniMax H3 Director Refine",
     "MiniMaxH3DirectorMotionFix": "MiniMax H3 Director Motion Fix",
     "MiniMaxH3DirectorSelfLift": "MiniMax H3 Director SelfLift",

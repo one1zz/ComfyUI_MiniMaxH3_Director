@@ -301,6 +301,23 @@ def _ref_tensor_from_seg_refs(refs, index: int) -> torch.Tensor | None:
     return None
 
 
+def _pad_ref_video_to_grid(frames: torch.Tensor) -> torch.Tensor:
+    """Hold the last frame so a reference clip reaches the 17n+5 grid.
+
+    The official ReferenceToVideo truncates the reference to the target length
+    and then snaps it DOWN to 17n+5, silently dropping 1-16 tail frames. Padding
+    up keeps the whole shot visible to the model (cost: a short held tail).
+    """
+    if not torch.is_tensor(frames) or frames.ndim != 4 or int(frames.shape[0]) <= 1:
+        return frames
+    n = int(frames.shape[0])
+    target = minimax_align_frame_count(n)
+    if target <= n:
+        return frames
+    pad = frames[-1:].repeat(target - n, 1, 1, 1)
+    return torch.cat([frames, pad], dim=0)
+
+
 def _build_minimax_inputs(
     plan: DirectorPlan,
     seg,
@@ -401,6 +418,25 @@ def _build_minimax_inputs(
                 "Director refs: long-edge %dpx — resized %d image(s).",
                 long_px,
                 n_resized,
+            )
+    if ref_videos and bool(getattr(plan, "ref_pad_to_grid", True)):
+        padded: dict = {}
+        changed = False
+        for key, value in ref_videos.items():
+            out = _pad_ref_video_to_grid(value)
+            if (
+                torch.is_tensor(out)
+                and torch.is_tensor(value)
+                and int(out.shape[0]) != int(value.shape[0])
+            ):
+                changed = True
+            padded[key] = out
+        ref_videos = padded
+        if changed:
+            log.info(
+                "Director refs: segment #%d reference video tail-padded to 17n+5 "
+                "(official node snaps down otherwise).",
+                int(getattr(seg, "index", 0)) + 1,
             )
     return first_frame, last_frame, ref_images, ref_videos, ref_audios, ref_video_audios
 

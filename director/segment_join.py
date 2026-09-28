@@ -133,7 +133,40 @@ def _concat_list(segments: list[Path], dest: Path) -> None:
     dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def join_run_dir(run_dir: Path) -> dict[str, Any]:
+def resolve_run_dir(raw: str | Path | None) -> Path:
+    """Resolve a user-supplied path to a concrete segment-export run dir.
+
+    Accepts the run dir itself, or its parent (``minimax_seg_export``) in which
+    case the newest subdir containing ``seg_0000.mp4`` wins. Empty input returns
+    the newest run dir overall.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        found = latest_run_dir(None)
+        if found is None:
+            raise RuntimeError("没有找到任何分段导出目录。")
+        return found
+    path = Path(text).expanduser()
+    if not path.is_dir():
+        raise RuntimeError(f"目录不存在：{path}")
+    if (path / "seg_0000.mp4").is_file():
+        return path
+    try:
+        cands = [
+            d
+            for d in path.iterdir()
+            if d.is_dir() and (d / "seg_0000.mp4").is_file()
+        ]
+    except OSError as exc:
+        raise RuntimeError(f"无法读取目录：{exc}") from exc
+    if not cands:
+        raise RuntimeError(f"目录里没有 seg_XXXX.mp4：{path}")
+    return max(cands, key=lambda d: d.stat().st_mtime)
+
+
+def join_run_dir(
+    run_dir: Path, *, output_name: str = "director_joined"
+) -> dict[str, Any]:
     """Join one segment-export run dir. Returns ``{output, audio, segments}``."""
     from ..lib.video_export import _ffmpeg_bin
 
@@ -192,8 +225,11 @@ def join_run_dir(run_dir: Path) -> dict[str, Any]:
         err = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
         return int(proc.returncode or 0), err
 
-    out_mp4 = run_dir / "director_joined.mp4"
-    out_mkv = run_dir / "director_joined.mkv"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(output_name or "")).strip("._")
+    if not safe_name:
+        safe_name = "director_joined"
+    out_mp4 = run_dir / f"{safe_name}.mp4"
+    out_mkv = run_dir / f"{safe_name}.mkv"
     for stale in (out_mp4, out_mkv):
         try:
             if stale.exists():

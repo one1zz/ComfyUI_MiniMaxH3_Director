@@ -258,6 +258,17 @@ function isExactExportEnabled(output) {
     return !!raw;
 }
 
+function isRefPadToGridEnabled(output) {
+    const raw = output?.refPadToGrid ?? output?.ref_pad_to_grid;
+    if (raw === undefined || raw === null) return true;
+    if (raw === false || raw === 0) return false;
+    if (typeof raw === "string") {
+        const s = raw.trim().toLowerCase();
+        return !(s === "false" || s === "0" || s === "no" || s === "off");
+    }
+    return !!raw;
+}
+
 function normalizeOutputContinuity(output = {}) {
     const rawOverlap = output.continuityOverlapFrames ?? output.continuity_overlap_frames ?? DEFAULT_CONTINUITY_FRAMES;
     return {
@@ -272,6 +283,7 @@ function normalizeOutputContinuity(output = {}) {
         exactExport: isExactExportEnabled(output),
         audioMode: normalizeAudioMode(output.audioMode ?? output.audio_mode),
         refImageSize: normalizeRefImageSize(output.refImageSize ?? output.ref_image_size),
+        refPadToGrid: isRefPadToGridEnabled(output),
     };
 }
 
@@ -2016,6 +2028,7 @@ function parseTimeline(raw, totalFrames, fps) {
             continuityRedraw: data.output?.continuityRedraw ?? data.output?.continuity_redraw,
             continuityKeepTail: data.output?.continuityKeepTail ?? data.output?.continuity_keep_tail,
             exactExport: isExactExportEnabled(data.output),
+            refPadToGrid: isRefPadToGridEnabled(data.output),
         });
         // Infer aspectRatio from saved width/height when older payloads omitted the label.
         if (!data.output.aspectRatio && data.output.width > 0 && data.output.height > 0) {
@@ -2978,6 +2991,10 @@ class MiniMaxH3DirectorEditor {
             </select>
             <button type="button" class="bd-btn hidden" data-a="join-segments" data-i18n="toolbar.joinSegments" data-i18n-title="tooltip.joinSegments">无损拼接</button>
             <span class="bd-meta hidden" data-r="join-status"></span>
+            <label data-r="out-ref-pad-wrap" data-i18n-title="tooltip.refPadToGrid">
+                <input type="checkbox" data-r="out-ref-pad" checked>
+                <span data-i18n="output.refPadToGrid">参考补齐</span>
+            </label>
             <datalist id="motion-dilate-presets">
                 <option value="2"></option>
                 <option value="3"></option>
@@ -3356,6 +3373,8 @@ class MiniMaxH3DirectorEditor {
         this.fpsInput = this.root.querySelector('[data-r="timeline-fps"]');
         this.outAudioWrap = this.root.querySelector('[data-r="out-audio-wrap"]');
         this.outAudioMode = this.root.querySelector('[data-r="out-audio-mode"]');
+        this.outRefPadWrap = this.root.querySelector('[data-r="out-ref-pad-wrap"]');
+        this.outRefPadCb = this.root.querySelector('[data-r="out-ref-pad"]');
         this.exportSourceImagesWrap = this.root.querySelector('[data-r="out-source-wrap"]');
         this.exportSourceImagesCb = this.root.querySelector('[data-r="out-export-source"]');
         this.exportPreFaceRefineWrap = this.root.querySelector('[data-r="out-preface-wrap"]');
@@ -3639,6 +3658,9 @@ class MiniMaxH3DirectorEditor {
         this.outExportMode.onchange = () => this.onOutputField("exportMode", this.outExportMode.value);
         if (this.outAudioMode) {
             this.outAudioMode.onchange = () => this.onOutputField("audioMode", this.outAudioMode.value);
+        }
+        if (this.outRefPadCb) {
+            this.outRefPadCb.onchange = () => this.onOutputField("refPadToGrid", this.outRefPadCb.checked);
         }
         if (this.exportSourceImagesCb) {
             this.exportSourceImagesCb.onchange = () => {
@@ -6351,6 +6373,7 @@ class MiniMaxH3DirectorEditor {
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
             exactExport: true,
+            refPadToGrid: true,
         };
         // Prefer ResolutionSelector fields; backfill from width/height when missing.
         // Custom keeps explicit width/height and does not recompute from megapixels.
@@ -6388,6 +6411,10 @@ class MiniMaxH3DirectorEditor {
         if (this.outExportMode) this.outExportMode.value = out.exportMode === "segments" ? "segments" : "all";
         if (this.joinSegmentsBtn) {
             this.joinSegmentsBtn.classList.toggle("hidden", out.exportMode !== "segments");
+        }
+        if (this.outRefPadCb) {
+            this.outRefPadCb.checked = isRefPadToGridEnabled(out);
+            this.timeline.output.refPadToGrid = this.outRefPadCb.checked;
         }
         if (this.outAudioMode) {
             const am = normalizeAudioMode(out.audioMode);
@@ -6887,6 +6914,7 @@ class MiniMaxH3DirectorEditor {
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
             exactExport: true,
+            refPadToGrid: true,
         };
         if (key === "aspectRatio") {
             if (isCustomAspectRatio(value)) {
@@ -6947,6 +6975,8 @@ class MiniMaxH3DirectorEditor {
             this.timeline.output.continuityKeepTail = !!value;
         } else if (key === "exactExport") {
             this.timeline.output.exactExport = value !== false && value !== 0;
+        } else if (key === "refPadToGrid") {
+            this.timeline.output.refPadToGrid = value !== false && value !== 0;
         }
         this.syncOutputUIFromTimeline();
         if (this.isFl2vMode()) updateFl2vDetailUI(this);
@@ -7066,6 +7096,7 @@ class MiniMaxH3DirectorEditor {
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
             continuityKeepTail: true,
             exactExport: true,
+            refPadToGrid: true,
         };
         if (this.timeline.output.audioMode == null) {
             this.timeline.output.audioMode = "generate";

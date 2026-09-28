@@ -240,6 +240,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
     # Branch-level build id: invalidates pre-fix caches once (both .pre and final
     # fingerprints derive from this payload).
     payload["pin_pipeline"] = PIN_PIPELINE_ID
+    payload["ref_pad_to_grid"] = bool(getattr(plan, "ref_pad_to_grid", True))
     witness = getattr(plan, "external_groups_witness", None)
     if isinstance(witness, dict):
         # This segment's own group only. The whole chain is deliberately *not*
