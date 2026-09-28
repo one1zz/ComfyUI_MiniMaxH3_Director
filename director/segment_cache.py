@@ -26,6 +26,10 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.cache")
 
 SOURCE_VIDEO_FP_KEY = "source_video"
 
+# Bump when pin/export behavior changes so old segment caches (which may hold
+# trimmed or slowed first-pass data from an older build) are never mixed in.
+PIN_PIPELINE_ID = "minimax_h3_director_pin_v2"
+
 # External-group (graph-wired i2v_groups / r2v_groups) identity. Stamped by
 # build_plan_from_external_groups from the frontend wiring witness's per-group
 # record — one group = one segment = one cache slot.
@@ -233,6 +237,9 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
     )
     if pinned:
         payload["exact_export"] = bool(getattr(plan, "exact_export", True))
+    # Branch-level build id: invalidates pre-fix caches once (both .pre and final
+    # fingerprints derive from this payload).
+    payload["pin_pipeline"] = PIN_PIPELINE_ID
     witness = getattr(plan, "external_groups_witness", None)
     if isinstance(witness, dict):
         # This segment's own group only. The whole chain is deliberately *not*

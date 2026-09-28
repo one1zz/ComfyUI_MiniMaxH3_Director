@@ -1150,6 +1150,10 @@ const STYLES = `
 .bd-seg-refsize select{max-width:132px}
 .bd-seg-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
 .bd-seg-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff}
+.bd-motion-row{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;user-select:none;flex-shrink:0}
+.bd-motion-step{padding:2px 7px;line-height:1;min-width:20px;justify-content:center}
+.bd-motion-dilate{width:52px}
+.bd-motion-default{color:#777;font-size:10px}
 .bd-seg-head .bd-meta,.bd-panel.bd-v2v-panel .bd-seg-head .bd-meta,.bd-panel.bd-rv2v-panel .bd-seg-head .bd-meta{color:#8a8a8a;font-size:11px;line-height:1.45;padding:0;min-width:0}
 .bd-prompt-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(110px,38%);gap:8px;align-items:stretch}
 .bd-prompt-layout>.bd-prompt-col{order:1}
@@ -2972,6 +2976,15 @@ class MiniMaxH3DirectorEditor {
                 <option value="all" data-i18n="output.exportMode.all">全部导出</option>
                 <option value="segments" data-i18n="output.exportMode.segments">分段导出</option>
             </select>
+            <button type="button" class="bd-btn hidden" data-a="join-segments" data-i18n="toolbar.joinSegments" data-i18n-title="tooltip.joinSegments">无损拼接</button>
+            <span class="bd-meta hidden" data-r="join-status"></span>
+            <datalist id="motion-dilate-presets">
+                <option value="2"></option>
+                <option value="3"></option>
+                <option value="4"></option>
+                <option value="7"></option>
+                <option value="8"></option>
+            </datalist>
             <span class="hidden" data-r="out-max-frames-wrap" hidden aria-hidden="true">
                 <label data-i18n="output.maxFrames">最大帧数</label>
                 <input type="number" class="bd-num" data-r="out-max-frames" min="0" max="999999" step="1" value="0" style="width:64px">
@@ -3047,7 +3060,13 @@ class MiniMaxH3DirectorEditor {
                 <div class="bd-gen-fc-row hidden" data-r="global-motion-row" data-i18n-title="tooltip.segmentMotion" style="gap:10px;align-items:center;padding:4px 0 2px">
                     <span class="bd-label" data-r="global-motion-label" data-i18n="panel.segmentMotion">本段动作修复</span>
                     <label class="bd-seg-continuity"><input type="checkbox" data-r="global-motion-cb"><span data-i18n="batch.motionFix">动作修复</span></label>
-                    <label class="bd-seg-continuity"><span data-i18n="batch.motionDilate">倍率</span><input type="number" class="bd-num" data-r="global-motion-dilate" min="1" max="56" step="1" value="2" style="width:56px" data-i18n-title="tooltip.segmentMotionDilate"></label>
+                    <span class="bd-motion-row">
+                        <span data-i18n="batch.motionDilate">倍率</span>
+                        <button type="button" class="bd-btn bd-motion-step" data-r="global-motion-minus" data-i18n-title="tooltip.motionDilateMinus">−</button>
+                        <input type="number" class="bd-num bd-motion-dilate" data-r="global-motion-dilate" min="1" max="56" step="1" list="motion-dilate-presets" data-i18n-placeholder="batch.motionDefault" placeholder="默认" data-i18n-title="tooltip.segmentMotionDilate">
+                        <button type="button" class="bd-btn bd-motion-step" data-r="global-motion-plus" data-i18n-title="tooltip.motionDilatePlus">＋</button>
+                        <span class="bd-motion-default hidden" data-r="global-motion-default"></span>
+                    </span>
                 </div>
                 <div class="bd-r2v-common-body" data-r="r2v-common-body">
                     <div class="bd-meta bd-r2v-common-hint hidden" data-r="r2v-common-hint" data-i18n="panel.r2vCommonHint">公共参考图/视频/音频供各组读取；公共提示词会与每组提示词拼接成完整提示词。同槽位以组内素材优先。</div>
@@ -3117,10 +3136,13 @@ class MiniMaxH3DirectorEditor {
                         <input type="checkbox" data-r="seg-motion">
                         <span data-i18n="batch.motionFix">动作修复</span>
                     </label>
-                    <label class="bd-seg-continuity hidden" data-r="seg-motion-dilate-wrap" hidden data-i18n-title="tooltip.segmentMotionDilate">
+                    <span class="bd-motion-row hidden" data-r="seg-motion-dilate-wrap" hidden data-i18n-title="tooltip.segmentMotionDilate">
                         <span data-i18n="batch.motionDilate">倍率</span>
-                        <input type="number" class="bd-num" data-r="seg-motion-dilate" min="1" max="56" step="1" value="2" style="width:56px">
-                    </label>
+                        <button type="button" class="bd-btn bd-motion-step" data-r="seg-motion-minus" data-i18n-title="tooltip.motionDilateMinus">−</button>
+                        <input type="number" class="bd-num bd-motion-dilate" data-r="seg-motion-dilate" min="1" max="56" step="1" list="motion-dilate-presets" data-i18n-placeholder="batch.motionDefault" placeholder="默认">
+                        <button type="button" class="bd-btn bd-motion-step" data-r="seg-motion-plus" data-i18n-title="tooltip.motionDilatePlus">＋</button>
+                        <span class="bd-motion-default hidden" data-r="seg-motion-default"></span>
+                    </span>
                     <div class="bd-meta" data-r="seg-info"></div>
                     <label class="bd-seg-refsize hidden" data-r="seg-ref-image-size-wrap" hidden data-i18n-title="tooltip.refImageSize">
                         <span data-i18n="output.refImageSize.label">参考图尺寸</span>
@@ -3252,6 +3274,9 @@ class MiniMaxH3DirectorEditor {
         this.globalMotionLabel = this.root.querySelector('[data-r="global-motion-label"]');
         this.globalMotionCb = this.root.querySelector('[data-r="global-motion-cb"]');
         this.globalMotionDilate = this.root.querySelector('[data-r="global-motion-dilate"]');
+        this.globalMotionMinus = this.root.querySelector('[data-r="global-motion-minus"]');
+        this.globalMotionPlus = this.root.querySelector('[data-r="global-motion-plus"]');
+        this.globalMotionDefault = this.root.querySelector('[data-r="global-motion-default"]');
         this.globalPanelTitle = this.globalPanel?.querySelector('[data-r="global-panel-title"]')
             || this.globalPanel?.querySelector("b");
         this.r2vCommonHead = this.root.querySelector('[data-r="r2v-common-head"]');
@@ -3286,6 +3311,11 @@ class MiniMaxH3DirectorEditor {
         this.segMotionCb = this.root.querySelector('[data-r="seg-motion"]');
         this.segMotionDilateWrap = this.root.querySelector('[data-r="seg-motion-dilate-wrap"]');
         this.segMotionDilate = this.root.querySelector('[data-r="seg-motion-dilate"]');
+        this.segMotionMinus = this.root.querySelector('[data-r="seg-motion-minus"]');
+        this.segMotionPlus = this.root.querySelector('[data-r="seg-motion-plus"]');
+        this.segMotionDefault = this.root.querySelector('[data-r="seg-motion-default"]');
+        this.joinSegmentsBtn = this.root.querySelector('[data-a="join-segments"]');
+        this.joinStatus = this.root.querySelector('[data-r="join-status"]');
         this.segRefImageSizeWrap = this.root.querySelector('[data-r="seg-ref-image-size-wrap"]');
         this.segRefImageSize = this.root.querySelector('[data-r="seg-ref-image-size"]');
         this.segInfo = this.root.querySelector('[data-r="seg-info"]');
@@ -3700,23 +3730,13 @@ class MiniMaxH3DirectorEditor {
             this.segMotionWrap?.setAttribute("title", t("tooltip.segmentMotion"));
         }
         if (this.segMotionDilate) {
-            const readMotionDilate = () => Math.max(
-                1, Math.min(56, parseInt(this.segMotionDilate.value, 10) || 2),
-            );
-            this.segMotionDilate.onchange = () => {
-                const seg = this.timeline.segments?.[this.selectedIndex];
-                if (!seg) return;
-                const n = readMotionDilate();
-                seg.motionDilate = n;
-                this.segMotionDilate.value = String(n);
-                this.commit(false, { syncTimeline: true });
-                this.syncGlobalMotionUI();
-            };
-            this.segMotionDilate.oninput = () => {
-                this.segMotionDilate.value = String(readMotionDilate());
-            };
-            this.segMotionDilate.addEventListener("keydown", (e) => e.stopPropagation());
-            this.segMotionDilate.addEventListener("keyup", (e) => e.stopPropagation());
+            this._bindMotionDilate({
+                input: this.segMotionDilate,
+                minus: this.segMotionMinus,
+                plus: this.segMotionPlus,
+                targetSeg: () => this.timeline.segments?.[this.selectedIndex],
+                after: () => this.syncGlobalMotionUI(),
+            });
             this.segMotionDilateWrap?.setAttribute("title", t("tooltip.segmentMotionDilate"));
         }
         // Global / common-ref panel row: edits the selected segment's motion fix
@@ -3732,24 +3752,20 @@ class MiniMaxH3DirectorEditor {
             this.globalMotionRow?.setAttribute("title", t("tooltip.segmentMotion"));
         }
         if (this.globalMotionDilate) {
-            const readGlobalMotionDilate = () => Math.max(
-                1, Math.min(56, parseInt(this.globalMotionDilate.value, 10) || 2),
-            );
-            this.globalMotionDilate.onchange = () => {
-                const seg = this.timeline.segments?.[this.selectedIndex];
-                if (!seg) return;
-                const n = readGlobalMotionDilate();
-                seg.motionDilate = n;
-                this.globalMotionDilate.value = String(n);
-                this.commit(false, { syncTimeline: true });
-                this.syncSegmentMotionUI();
-            };
-            this.globalMotionDilate.oninput = () => {
-                this.globalMotionDilate.value = String(readGlobalMotionDilate());
-            };
-            this.globalMotionDilate.addEventListener("keydown", (e) => e.stopPropagation());
-            this.globalMotionDilate.addEventListener("keyup", (e) => e.stopPropagation());
+            this._bindMotionDilate({
+                input: this.globalMotionDilate,
+                minus: this.globalMotionMinus,
+                plus: this.globalMotionPlus,
+                targetSeg: () => this.timeline.segments?.[this.selectedIndex],
+                after: () => this.syncSegmentMotionUI(),
+            });
             this.globalMotionDilate.setAttribute("title", t("tooltip.segmentMotionDilate"));
+        }
+        if (this.joinSegmentsBtn) {
+            this.joinSegmentsBtn.onclick = (e) => {
+                stopDomEvent(e);
+                void this.joinSegments();
+            };
         }
 
         this.genGlobalImg?.addEventListener("click", (e) => { stopDomEvent(e); this.pickGenSrcImage(true); });
@@ -6370,6 +6386,9 @@ class MiniMaxH3DirectorEditor {
         if (this.outH) this.outH.value = String(out.height ?? 480);
         if (this.outMaxFrames) this.outMaxFrames.value = String(out.maxExportFrames ?? 0);
         if (this.outExportMode) this.outExportMode.value = out.exportMode === "segments" ? "segments" : "all";
+        if (this.joinSegmentsBtn) {
+            this.joinSegmentsBtn.classList.toggle("hidden", out.exportMode !== "segments");
+        }
         if (this.outAudioMode) {
             const am = normalizeAudioMode(out.audioMode);
             this.outAudioMode.value = am;
@@ -6510,6 +6529,86 @@ class MiniMaxH3DirectorEditor {
         this.syncSegmentRefImageSizeUI();
     }
 
+    /** Node-level dilate default of the connected Motion Fix node (0 = none). */
+    _motionNodeDefaultDilate() {
+        try {
+            const graph = this.node?.graph ?? app.graph ?? app.canvas?.graph;
+            const input = this.node?.inputs?.find((i) => i?.name === "motion_fix");
+            if (!input || input.link == null) return 0;
+            const link = graph?.links?.[input.link] ?? graph?._links?.[input.link];
+            const origin = String(link?.origin_id ?? "");
+            const node = typeof graph?.getNodeById === "function"
+                ? graph.getNodeById(link?.origin_id)
+                : (graph?._nodes || []).find((n) => String(n?.id) === origin);
+            const widget = node?.widgets?.find((w) => w?.name === "dilate");
+            const n = parseInt(widget?.value, 10);
+            return Number.isFinite(n) ? Math.max(1, Math.min(56, n)) : 0;
+        } catch (err) {
+            return 0;
+        }
+    }
+
+    /** Dilate editor: empty = node default; no rewrite while typing; +/- steppers. */
+    _bindMotionDilate({ input, minus, plus, targetSeg, after }) {
+        if (!input) return;
+        const read = () => {
+            const raw = String(input.value ?? "").trim();
+            if (!raw) return 0;
+            const n = parseInt(raw, 10);
+            if (!Number.isFinite(n)) return 0;
+            return Math.max(1, Math.min(56, n));
+        };
+        const apply = () => {
+            const seg = targetSeg();
+            if (!seg) return;
+            const n = read();
+            seg.motionDilate = n;
+            input.value = n > 0 ? String(n) : "";
+            this.commit(false, { syncTimeline: true });
+            after?.();
+        };
+        input.onfocus = () => input.select();
+        input.onchange = () => apply();
+        input.onkeydown = (e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") {
+                apply();
+                input.blur();
+            }
+        };
+        input.addEventListener("keyup", (e) => e.stopPropagation());
+        const step = (delta) => {
+            const seg = targetSeg();
+            if (!seg) return;
+            const current = read() || this._motionNodeDefaultDilate() || 2;
+            const n = Math.max(1, Math.min(56, current + delta));
+            input.value = String(n);
+            seg.motionDilate = n;
+            this.commit(false, { syncTimeline: true });
+            after?.();
+        };
+        if (minus) minus.onclick = (e) => { stopDomEvent(e); step(-1); };
+        if (plus) plus.onclick = (e) => { stopDomEvent(e); step(1); };
+    }
+
+    _syncMotionDilateControls(seg, { input, minus, plus, badge }) {
+        const def = this._motionNodeDefaultDilate();
+        const stored = Math.max(0, Math.min(56, parseInt(seg?.motionDilate, 10) || 0));
+        if (input) {
+            input.value = stored > 0 ? String(stored) : "";
+            input.placeholder = def > 0 ? String(def) : t("batch.motionDefault");
+            input.dataset.motionDefault = String(def || 2);
+            input.disabled = !seg?.motionFix;
+        }
+        if (minus) minus.disabled = !seg?.motionFix;
+        if (plus) plus.disabled = !seg?.motionFix;
+        if (badge) {
+            const showDef = stored <= 0 && def > 0;
+            badge.textContent = showDef ? t("batch.motionDefaultIs", { n: def }) : "";
+            badge.classList.toggle("hidden", !showDef);
+        }
+    }
+
     /** Per-segment Motion Fix (动作修复) on v2v/rv2v segment panels. */
     syncSegmentMotionUI() {
         const wrap = this.segMotionWrap;
@@ -6525,10 +6624,12 @@ class MiniMaxH3DirectorEditor {
         if (!show) return;
         const seg = this.timeline.segments?.[this.selectedIndex ?? 0];
         cb.checked = !!seg?.motionFix;
-        if (this.segMotionDilate) {
-            const n = Math.max(1, Math.min(56, parseInt(seg?.motionDilate, 10) || 2));
-            this.segMotionDilate.value = String(n);
-        }
+        this._syncMotionDilateControls(seg, {
+            input: this.segMotionDilate,
+            minus: this.segMotionMinus,
+            plus: this.segMotionPlus,
+            badge: this.segMotionDefault,
+        });
         wrap.title = t("tooltip.segmentMotion");
     }
 
@@ -6551,10 +6652,12 @@ class MiniMaxH3DirectorEditor {
             this.globalMotionLabel.textContent = t("panel.motionSegmentN", { n: idx + 1 });
         }
         if (this.globalMotionCb) this.globalMotionCb.checked = !!seg?.motionFix;
-        if (this.globalMotionDilate) {
-            const n = Math.max(1, Math.min(56, parseInt(seg?.motionDilate, 10) || 2));
-            this.globalMotionDilate.value = String(n);
-        }
+        this._syncMotionDilateControls(seg, {
+            input: this.globalMotionDilate,
+            minus: this.globalMotionMinus,
+            plus: this.globalMotionPlus,
+            badge: this.globalMotionDefault,
+        });
     }
 
     /** Per-segment「引用上段」on v2v/rv2v segment panel (index>0 + master on). */
@@ -9952,6 +10055,40 @@ class MiniMaxH3DirectorEditor {
         el.textContent = msg;
         el.classList.toggle("ok", !!ok);
         el.classList.remove("hidden");
+    }
+
+    /** Lossless join of the latest segment-export run (video copy + WAV audio). */
+    async joinSegments() {
+        const setStatus = (text, kind = "") => {
+            if (!this.joinStatus) return;
+            this.joinStatus.textContent = text || "";
+            this.joinStatus.classList.toggle("hidden", !text);
+            this.joinStatus.style.color = kind === "ok" ? "#4fff8f" : kind === "err" ? "#f88" : "#aaa";
+        };
+        if (this.timeline?.output?.exportMode !== "segments") {
+            setStatus(t("join.needSegments"), "err");
+            return;
+        }
+        const nodeId = this.node?.id;
+        if (nodeId == null) {
+            setStatus(t("join.failed", { err: "node id missing" }), "err");
+            return;
+        }
+        setStatus(t("join.running"));
+        try {
+            const resp = await api.fetchApi("/minimax/director/join_segments", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ node_id: String(nodeId) }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data?.error) {
+                throw new Error(data?.error || `HTTP ${resp.status}`);
+            }
+            setStatus(t("join.done", { path: data.output || "" }), "ok");
+        } catch (err) {
+            setStatus(t("join.failed", { err: err?.message || err }), "err");
+        }
     }
 
     async smartSplit() {
