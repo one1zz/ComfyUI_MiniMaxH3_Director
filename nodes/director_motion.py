@@ -130,8 +130,11 @@ class MiniMaxH3DirectorMotionFix:
                 ),
                 "max_slowed_frames": (
                     "INT",
-                    {"default": 362, "min": 5, "max": 3600, "step": 1,
-                     "tooltip": "放慢后总长的上限（H3 训练区间约 124–362，更长未验证）。"},
+                    {"default": 512, "min": 5, "max": 3600, "step": 1,
+                     "tooltip": (
+                         "放慢后总长的软上限（默认 512）。超过约 362 会提示"
+                         "「超出 H3 训练区间」；超过本值仅提示，可继续但风险自负。"
+                     )},
                 ),
                 "fail_fallback": (
                     "BOOLEAN",
@@ -173,7 +176,7 @@ class MiniMaxH3DirectorMotionFix:
         bridge=2,
         ramp=1,
         min_frames=36,
-        max_slowed_frames=362,
+        max_slowed_frames=512,
         fail_fallback=True,
         **kwargs,
     ):

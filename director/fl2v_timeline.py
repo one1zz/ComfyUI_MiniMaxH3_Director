@@ -522,7 +522,7 @@ def build_fl2v_director_plan(
         SegmentRef,
         _parse_run_selection,
         _resolve_export_mode,
-        resolve_exact_export,
+        exact_export_setting,
         resolve_ref_pad_to_grid,
         resolve_segment_motion_fix,
     )
@@ -677,6 +677,9 @@ def build_fl2v_director_plan(
         end_f = start_f + fc
         if run_sel is None or int(shot["source_index"]) in run_sel:
             selected_plan_indices.append(plan_index)
+        _motion_enabled, _motion_dilate = resolve_segment_motion_fix(
+            shot if isinstance(shot, dict) else {}
+        )
         segments.append(
             SegmentPlan(
                 index=plan_index,
@@ -693,12 +696,8 @@ def build_fl2v_director_plan(
                     shot if isinstance(shot, dict) else {},
                     segment_index=plan_index,
                 ),
-                motion_fix_enabled=resolve_segment_motion_fix(
-                    shot if isinstance(shot, dict) else {}
-                )[0],
-                motion_dilate=resolve_segment_motion_fix(
-                    shot if isinstance(shot, dict) else {}
-                )[1],
+                motion_fix_enabled=_motion_enabled,
+                motion_dilate=_motion_dilate,
             )
         )
         plan_index += 1
@@ -732,6 +731,9 @@ def build_fl2v_director_plan(
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
     continuity_keep_tail = resolve_continuity_keep_tail(timeline)
+    _exact_value, _exact_explicit = exact_export_setting(
+        timeline.get("output"), continuity_enabled=continuity_enabled
+    )
     run_indices = (
         frozenset(selected_plan_indices) if run_sel is not None else None
     )
@@ -760,6 +762,7 @@ def build_fl2v_director_plan(
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
-        exact_export=resolve_exact_export(timeline.get("output")),
+        exact_export=_exact_value,
+        exact_export_explicit=_exact_explicit,
         ref_pad_to_grid=resolve_ref_pad_to_grid(timeline.get("output")),
     )

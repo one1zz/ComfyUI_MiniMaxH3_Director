@@ -31,6 +31,11 @@ from ..lib.video_io import (
     load_timeline_segment,
     video_clips_from_timeline,
 )
+from .export_policy import (  # noqa: F401  (resolve_exact_export is a re-export)
+    exact_export_setting,
+    flag_true,
+    resolve_exact_export,
+)
 from .gen_timeline import (
     build_gen_director_plan,
     is_gen_timeline,
@@ -150,11 +155,7 @@ def _legacy_output_ref_image_size(timeline: dict | None) -> str | None:
 
 
 def _flag_true(value, default: bool = False) -> bool:
-    if value is None:
-        return bool(default)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
+    return flag_true(value, default)
 
 
 def resolve_segment_motion_fix(seg_data: dict | None) -> tuple[bool, int]:
@@ -177,28 +178,19 @@ def resolve_segment_motion_fix(seg_data: dict | None) -> tuple[bool, int]:
     return enabled, dilate
 
 
-def resolve_exact_export(output_block: dict | None) -> bool:
-    """Source-audio-safe exact export (default on; timeline output.exactExport)."""
-    out = output_block if isinstance(output_block, dict) else {}
-    raw = out.get("exactExport")
-    if raw is None:
-        raw = out.get("exact_export")
-    return _flag_true(raw, True)
-
-
 def resolve_ref_pad_to_grid(output_block: dict | None) -> bool:
     """Pad reference videos up to 17n+5 (hold last frame) before the official node.
 
     The official ReferenceToVideo truncates then snaps the reference video DOWN
-    to 17n+5, silently dropping 1-16 tail frames per clip. Default on: pass an
-    up-aligned clip so the model sees the whole shot (a small held tail is the
-    cost). Timeline ``output.refPadToGrid=false`` restores stock behavior.
+    to 17n+5, silently dropping 1-16 tail frames per clip. Default OFF (stock
+    behavior); timeline ``output.refPadToGrid=true`` opts in so the model sees
+    the whole shot (a small held tail is the cost).
     """
     out = output_block if isinstance(output_block, dict) else {}
     raw = out.get("refPadToGrid")
     if raw is None:
         raw = out.get("ref_pad_to_grid")
-    return _flag_true(raw, True)
+    return _flag_true(raw, False)
 
 
 def resolve_ref_image_size(seg_or_data=None, plan_or_timeline=None) -> str:
@@ -342,10 +334,14 @@ class DirectorPlan:
     continuity_keep_tail: bool = True
     # Source-audio-safe length normalization: export exactly the source window
     # and drop the pin phase gap from the previous export (video+audio together).
-    exact_export: bool = True
+    # Default off (legacy keep-full); auto-on for source audio + continuity.
+    exact_export: bool = False
+    # True when the timeline explicitly set exactExport (auto-enable must not
+    # override a deliberate user choice).
+    exact_export_explicit: bool = False
     # Reference videos: pad up to 17n+5 before the official node (its own snap
-    # is downward and silently drops 1-16 tail frames per clip).
-    ref_pad_to_grid: bool = True
+    # is downward and silently drops 1-16 tail frames per clip). Default off.
+    ref_pad_to_grid: bool = False
     # Optional Motion Fix defaults (node pack); per-segment flags live on SegmentPlan.
     motion_fix: dict | None = None
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
@@ -1015,6 +1011,9 @@ def build_director_plan(
         seg.motion_fix_enabled, seg.motion_dilate = resolve_segment_motion_fix(data)
 
     output_block = timeline.get("output") or {}
+    _exact_value, _exact_explicit = exact_export_setting(
+        output_block, continuity_enabled=continuity_enabled
+    )
     return DirectorPlan(
         frame_rate=float(timeline.get("frameRate") or frame_rate or 24),
         total_frames=total,
@@ -1041,7 +1040,8 @@ def build_director_plan(
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
-        exact_export=resolve_exact_export(output_block),
+        exact_export=_exact_value,
+        exact_export_explicit=_exact_explicit,
         ref_pad_to_grid=resolve_ref_pad_to_grid(output_block),
         global_ref_audios=global_ref_audios,
     )
@@ -1200,7 +1200,7 @@ def plan_summary(plan: DirectorPlan) -> str:
                 if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
             ]
             keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
-            if getattr(plan, "exact_export", True):
+            if getattr(plan, "exact_export", False):
                 keep_note += ", exact export"
             lines.append(
                 f"Segment continuity: ON ({getattr(plan, 'continuity_mode', 'guide')} "
@@ -1246,7 +1246,7 @@ def plan_summary(plan: DirectorPlan) -> str:
         )
     export_label = "分段导出" if plan.export_mode == "segments" else "全部导出"
     lines.append(f"Export mode: {export_label}")
-    if getattr(plan, "ref_pad_to_grid", True):
+    if getattr(plan, "ref_pad_to_grid", False):
         lines.append(
             "Reference video: 尾部补齐到 17n+5 再送入官方节点（避免其向下吸附丢尾帧）"
         )
@@ -1262,7 +1262,7 @@ def plan_summary(plan: DirectorPlan) -> str:
             if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
         ]
         keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
-        if getattr(plan, "exact_export", True):
+        if getattr(plan, "exact_export", False):
             keep_note += ", exact export"
         lines.append(
             f"Segment continuity: ON ({getattr(plan, 'continuity_mode', 'guide')} "

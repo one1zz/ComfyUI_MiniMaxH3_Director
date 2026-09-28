@@ -26,7 +26,12 @@ LEGAL_PIN_WINDOWS = (5, 22, 39, 56)
 
 DEFAULT_DILATE = 2
 MAX_DILATE = 56
-DEFAULT_MAX_SLOWED_FRAMES = 362
+# H3 was trained on ~124-362 output frames; beyond TRAINED_MAX we still run but
+# warn (soft). DEFAULT_MAX_SLOWED_FRAMES is the default soft ceiling (the user
+# may raise it manually); HARD_MAX mirrors the official node's length max.
+TRAINED_MAX_SLOWED_FRAMES = 362
+DEFAULT_MAX_SLOWED_FRAMES = 512
+HARD_MAX_SLOWED_FRAMES = 3600
 DEFAULT_MIN_MOTION_FRAMES = 36
 DEFAULT_GATE_ABS = 2.0
 DEFAULT_GATE_REL = 0.35
@@ -335,10 +340,22 @@ def build_motion_plan(
     total = hold_map_total(hold_map)
     slowed_raw = _align(total)
     max_slowed = max(5, int(motion_cfg.get("max_slowed_frames") or DEFAULT_MAX_SLOWED_FRAMES))
-    if slowed_raw > max_slowed:
+    # Soft ceilings: over the trained range and over the user's own bound only
+    # warn (the user opted into the risk). Only the pipeline's hard max errors.
+    warnings: list[str] = []
+    if slowed_raw > HARD_MAX_SLOWED_FRAMES:
         raise ValueError(
-            f"motion fix: slowed length {slowed_raw}f exceeds max {max_slowed}f "
-            f"(dilate={dilate}); lower the factor or disable motion for this segment."
+            f"motion fix: slowed length {slowed_raw}f exceeds the pipeline hard max "
+            f"{HARD_MAX_SLOWED_FRAMES}f (dilate={dilate}); lower the factor."
+        )
+    if slowed_raw > TRAINED_MAX_SLOWED_FRAMES:
+        warnings.append(
+            f"放慢总长 {slowed_raw}f 超出 H3 训练区间（约 124–{TRAINED_MAX_SLOWED_FRAMES}f），"
+            "画质/显存/耗时未验证"
+        )
+    if slowed_raw > max_slowed:
+        warnings.append(
+            f"放慢总长 {slowed_raw}f 超过设定上限 {max_slowed}f（软限，已按风险继续）"
         )
     slowed_clip, hold_map_used = expand_frames(clip, hold_map, target_frames=slowed_raw)
     if int(slowed_clip.shape[0]) != slowed_raw:
@@ -360,6 +377,7 @@ def build_motion_plan(
         "source_init_denoise": float(motion_cfg.get("source_init_denoise") or 0.0),
         "audio_recover": str(motion_cfg.get("audio_recover") or DEFAULT_AUDIO_RECOVER),
         "pin_window": dilation_pin_window(dilate),
+        "warnings": warnings,
         "pipeline": MOTION_PIPELINE_ID,
     }
 

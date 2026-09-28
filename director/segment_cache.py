@@ -28,7 +28,8 @@ SOURCE_VIDEO_FP_KEY = "source_video"
 
 # Bump when pin/export behavior changes so old segment caches (which may hold
 # trimmed or slowed first-pass data from an older build) are never mixed in.
-PIN_PIPELINE_ID = "minimax_h3_director_pin_v2"
+# v3: motion audio-pin window fix, soft slowed limit, exact/ref-pad default off.
+PIN_PIPELINE_ID = "minimax_h3_director_pin_v3"
 
 # External-group (graph-wired i2v_groups / r2v_groups) identity. Stamped by
 # build_plan_from_external_groups from the frontend wiring witness's per-group
@@ -236,11 +237,11 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         and bool(getattr(seg, "continuity_from_prev", True))
     )
     if pinned:
-        payload["exact_export"] = bool(getattr(plan, "exact_export", True))
+        payload["exact_export"] = bool(getattr(plan, "exact_export", False))
     # Branch-level build id: invalidates pre-fix caches once (both .pre and final
     # fingerprints derive from this payload).
     payload["pin_pipeline"] = PIN_PIPELINE_ID
-    payload["ref_pad_to_grid"] = bool(getattr(plan, "ref_pad_to_grid", True))
+    payload["ref_pad_to_grid"] = bool(getattr(plan, "ref_pad_to_grid", False))
     witness = getattr(plan, "external_groups_witness", None)
     if isinstance(witness, dict):
         # This segment's own group only. The whole chain is deliberately *not*

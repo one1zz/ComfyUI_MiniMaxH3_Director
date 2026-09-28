@@ -513,8 +513,9 @@ def apply_motion_context(
 
     # Cross-timebase pins (motion fix) may take video from decoded pixels while
     # audio still slices the previous *slowed* AV latent, so keep them separate.
-    audio_latent_explicit = audio_context_latent is not None
-    pin_audio_latent = audio_context_latent if audio_latent_explicit else context_latent
+    pin_audio_latent, audio_latent_explicit = pin_audio_latent_source(
+        context_latent, audio_context_latent
+    )
     if context_latent is not None:
         src = video_from_latent(context_latent)
         src_w, src_h = int(src.shape[4]) * 16, int(src.shape[3]) * 16
@@ -639,14 +640,11 @@ def apply_motion_context(
         # Official: audio window independent; 0 follows video span. Example WF uses 24.
         a_frames = int(audio_ctx) if audio_ctx > 0 else int(span)
         # Align audio pin end with the video pin window (not export overshoot).
-        if audio_latent_explicit:
-            # Slowed audio latent: slice up to the previous export end (not the
-            # sample's align remainder). None still means absolute tail.
-            audio_end_limit = context_end_frame
-        else:
-            audio_end_limit = (
-                pin_end_px if pin_end_px is not None else context_end_frame
-            )
+        audio_end_limit = pin_audio_end_limit(
+            explicit=audio_latent_explicit,
+            context_end_frame=context_end_frame,
+            pin_end_px=pin_end_px,
+        )
         if pin_audio_latent is not None:
             audio_latent, ref_audio_t, overhang = _audio_tail_from_latent(
                 pin_audio_latent, a_frames, end_frame=audio_end_limit
@@ -813,3 +811,29 @@ def continuity_export_len(
 def handoff_end_frame(*, trim_frames: int, export_frames: int) -> int:
     """Sample-timeline pixel index where the exported segment ends (exclusive)."""
     return max(0, int(trim_frames)) + max(0, int(export_frames))
+
+
+def pin_audio_latent_source(context_latent, audio_context_latent):
+    """Resolve the latent an audio pin is sliced from.
+
+    Motion fix may pin video from decoded pixels while audio still slices the
+    previous *slowed* AV latent, so the two are kept separate. Returns
+    ``(pin_audio_latent, explicit)``.
+    """
+    if audio_context_latent is not None:
+        return audio_context_latent, True
+    return context_latent, False
+
+
+def pin_audio_end_limit(
+    *, explicit: bool, context_end_frame: int | None, pin_end_px: int | None
+) -> int | None:
+    """Audio pin end coordinate.
+
+    A slowed audio latent (explicit) is sliced up to the previous export end;
+    otherwise follow the video pin end, or the caller-supplied context end.
+    ``None`` still means the absolute latent tail.
+    """
+    if explicit:
+        return context_end_frame
+    return pin_end_px if pin_end_px is not None else context_end_frame

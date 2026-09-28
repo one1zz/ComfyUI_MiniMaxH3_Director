@@ -880,6 +880,7 @@ def apply_segment_refine(
     prev_refine_av=None,
     prev_end_frame: int | None = None,
     prev_tail: torch.Tensor | None = None,
+    motion_keep_prefix_lock: bool = False,
     shift_cache=None,
 ) -> tuple[dict, str]:
     """Run optional refine/upscale second sample. Never raises — returns first-pass on failure.
@@ -887,6 +888,10 @@ def apply_segment_refine(
     ``first_pass_images``: already-decoded first-pass frames (skips a second VAE
     decode in upscale mode). Includes motion-context prefix when continuity is on.
     ``trim_frames``: pinned prefix length from first pass (0 = no continuity).
+    ``motion_keep_prefix_lock``: the first pass already pinned a *slowed* motion
+    prefix into the latent; keep its mask + re-install the schedule lock on the
+    second sample. Re-pinning is skipped (the prefix is already in the latent and
+    its frames are trimmed after recovery).
     ``passes``: sample this many times after first-pass. Upscale (if any) runs
     once before pass 1; later passes are same-canvas refine only.
     ``on_pass(pass_index, n_passes, latent)``: after each sample (1-based).
@@ -918,7 +923,10 @@ def apply_segment_refine(
 
     # Same-size refine keeps any first-pass mask so a continuity lock still holds.
     # No continuity → drop stray masks so refine can touch the whole clip.
-    work = dict(samples) if pin_frames > 0 else _latent_without_mask(samples)
+    # Motion + continue keeps the first-pass mask/lock even with pin_frames=0
+    # (the slowed prefix is already pinned in the latent; it is trimmed later).
+    keep_mask = pin_frames > 0 or motion_keep_prefix_lock
+    work = dict(samples) if keep_mask else _latent_without_mask(samples)
     refine_positive = positive
     last_ok = samples
     try:
@@ -1032,23 +1040,34 @@ def apply_segment_refine(
                     )
 
         continue_after_shift = None
-        if continue_mode and pin_frames > 0:
+        if continue_mode and (pin_frames > 0 or motion_keep_prefix_lock):
             try:
-                work, locked = _relock_continue_refine(
-                    work,
-                    vae=vae,
-                    audio_vae=audio_vae,
-                    pin_frames=pin_frames,
-                    prev_refine_av=prev_refine_av,
-                    prev_end_frame=prev_end_frame,
-                    prev_tail=prev_tail,
-                    seam_min=float(getattr(plan, "continuity_redraw", 0.10)),
-                )
+                if pin_frames > 0:
+                    work, locked = _relock_continue_refine(
+                        work,
+                        vae=vae,
+                        audio_vae=audio_vae,
+                        pin_frames=pin_frames,
+                        prev_refine_av=prev_refine_av,
+                        prev_end_frame=prev_end_frame,
+                        prev_tail=prev_tail,
+                        seam_min=float(getattr(plan, "continuity_redraw", 0.10)),
+                    )
+                else:
+                    # Motion slowed prefix is already copied into the latent; only
+                    # re-install the schedule-matched lock (no re-pin).
+                    from .h3_latent_continue import _prefix_steps_from_latent
+
+                    locked = _prefix_steps_from_latent(work) > 0
                 if locked:
                     from .h3_latent_continue import install_continue_prefix_remask
 
                     continue_after_shift = install_continue_prefix_remask
-                    note_parts.append(f"continue re-lock {pin_frames}f")
+                    note_parts.append(
+                        f"continue re-lock {pin_frames}f"
+                        if pin_frames > 0
+                        else "continue prefix lock (motion)"
+                    )
                     last_ok = work
             except Exception as exc:
                 log.warning(

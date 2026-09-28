@@ -27,7 +27,7 @@ from .refine_pack import (
     refine_will_sample,
 )
 from .refine_sampling import apply_segment_refine
-from .frame_align import minimax_align_frame_count, pad_or_trim_frames
+from .frame_align import minimax_align_frame_count
 from .audio_export import (
     AUDIO_MODE_GENERATE,
     AUDIO_MODE_MUTE,
@@ -74,19 +74,25 @@ from .h3_motion_context import (
     video_from_latent,
 )
 from .motion_pack import (
-    motion_enabled_for_segment,
+    CAP_DEGRADED,
+    CAP_HINT,
+    CAP_UNSUPPORTED,
+    decide_pin_audio,
+    motion_capabilities,
     motion_master,
+    motion_meta_usable,
     motion_report_line,
     resolve_motion_for_segment,
+    select_pin_window,
 )
 from .motion_retime import (
     DEFAULT_AUDIO_RECOVER,
+    DEFAULT_MAX_SLOWED_FRAMES,
     apply_source_init_latent,
     build_motion_plan,
     expand_audio_for_slowed_pin,
     expand_frames as expand_frames_with_holds,
     motion_meta_for_handoff,
-    pin_window_for_available,
     plan_length_audit,
     recover_after_slowed_trim,
     recover_held_audio,
@@ -292,6 +298,22 @@ def _predict_pin_gap(
         return None
 
 
+def _motion_hint_messages(caps) -> list[str]:
+    """Actionable capability notes for the run report.
+
+    ``window_promotion`` is resolved dynamically at the pin site (depends on the
+    previous export length), so the static note is filtered out here.
+    """
+    skip = {"ok", "window_promotion"}
+    out: list[str] = []
+    for cap in caps or ():
+        if cap.code in skip or not cap.message:
+            continue
+        if cap.level in (CAP_DEGRADED, CAP_UNSUPPORTED, CAP_HINT):
+            out.append(cap.message)
+    return out
+
+
 def _ref_tensor_from_seg_refs(refs, index: int) -> torch.Tensor | None:
     for ref in refs or []:
         if int(getattr(ref, "index", -1)) == index and ref.tensor is not None:
@@ -419,7 +441,7 @@ def _build_minimax_inputs(
                 long_px,
                 n_resized,
             )
-    if ref_videos and bool(getattr(plan, "ref_pad_to_grid", True)):
+    if ref_videos and bool(getattr(plan, "ref_pad_to_grid", False)):
         padded: dict = {}
         changed = False
         for key, value in ref_videos.items():
@@ -732,7 +754,9 @@ def execute_director_plan_core(
             else ""
         )
         keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
-        exact_note = ", exact export" if getattr(plan, "exact_export", True) else ""
+        _exact_on = bool(getattr(plan, "exact_export", False))
+        _exact_explicit = bool(getattr(plan, "exact_export_explicit", False))
+        exact_note = ", exact export" if _exact_on else ""
         reports.append(
             f"Segment continuity: ON — {mode_label} "
             f"{snap_context_frames(plan.continuity_overlap_frames)}f{redraw_note}{keep_note}{exact_note} "
@@ -747,7 +771,7 @@ def execute_director_plan_core(
             )
         gap_entries: list[tuple[int, int, int]] = []
         ctx_plan = snap_context_frames(plan.continuity_overlap_frames)
-        exact_on = bool(getattr(plan, "exact_export", True))
+        exact_on = bool(getattr(plan, "exact_export", False))
         keep_tail_on = bool(getattr(plan, "continuity_keep_tail", True))
         for seg in all_segments:
             source = int(seg.frame_count or 0)
@@ -779,6 +803,11 @@ def execute_director_plan_core(
                 "  Exact export: 每段导出=源窗口；有相位差的接缝改用像素重编码钉入"
                 "（不再裁剪上一段，帧与音频都不丢）。"
             )
+            if not _exact_explicit:
+                reports.append(
+                    "  Exact export 由「原声 + 段间引导」自动启用（避免源声漂移）；"
+                    "如需关闭请在输出栏显式设置。"
+                )
     else:
         reports.append(
             "Segment continuity: OFF — official MiniMax H3 per-segment path "
@@ -884,9 +913,12 @@ def execute_director_plan_core(
         motion_plan: dict[str, Any] | None = None
         motion_cfg = resolve_motion_for_segment(plan, seg)
         if motion_cfg is not None and selflift_will_run(plan, seg):
-            reports.append(
-                f"Seg #{seg.index + 1}: 动作修复已跳过（与 SelfLift 叠加未验证）"
-            )
+            for _m in _motion_hint_messages(
+                motion_capabilities(
+                    enabled=True, task_key=seg.task_key, selflift=True
+                )
+            ):
+                reports.append(f"Seg #{seg.index + 1}: {_m}")
             motion_cfg = None
         if motion_cfg is not None and clip_frames is not None and int(clip_frames.shape[0]) > 0:
             if int(clip_frames.shape[0]) > int(target_len):
@@ -923,6 +955,49 @@ def execute_director_plan_core(
                     reports.append(
                         f"Seg #{seg.index + 1}: 动作修复准备失败（{exc}），本段按普通方式"
                     )
+                # Capability notes are presentation-only: never let a bug here
+                # disable a successfully built motion plan.
+                if motion_plan is not None:
+                    try:
+                        _caps = motion_capabilities(
+                            enabled=True,
+                            task_key=seg.task_key,
+                            dilate=int(motion_plan.get("dilate") or 1),
+                            slowed_frames=int(motion_plan.get("slowed_frames") or 0),
+                            max_slowed_frames=int(
+                                motion_cfg.get("max_slowed_frames") or 0
+                            )
+                            or DEFAULT_MAX_SLOWED_FRAMES,
+                            context_frames=snap_context_frames(
+                                plan.continuity_overlap_frames
+                            ),
+                            continuity=(
+                                ("continue" if is_continue_mode(plan) else "guide")
+                                if getattr(plan, "continuity_enabled", False)
+                                else "off"
+                            ),
+                            audio_mode=str(audio_mode or "generate"),
+                            exact_export=bool(getattr(plan, "exact_export", False)),
+                            refine=(
+                                (
+                                    "upscale"
+                                    if refine_needs_canvas(
+                                        getattr(plan, "refine", None)
+                                    )
+                                    else "refine"
+                                )
+                                if refine_will_sample(plan, seg)
+                                else "off"
+                            ),
+                            selflift=False,
+                            face_refine=run_face_refine,
+                            semantic_bridge=bool(getattr(plan, "semantic_bridge", None)),
+                            fps=float(plan.frame_rate or 24.0),
+                        )
+                        for _m in _motion_hint_messages(_caps):
+                            reports.append(f"Seg #{seg.index + 1}: {_m}")
+                    except Exception as _cap_exc:
+                        log.debug("Motion capability notes skipped: %s", _cap_exc)
                 # Generated audio cannot be left on the slowed clock: fail fast.
                 if (
                     motion_plan is not None
@@ -1131,6 +1206,22 @@ def execute_director_plan_core(
         if skip_first_sample:
             # Cached first-pass latent already has its original pin; don't rebuild MC.
             use_motion_context = False
+        if (
+            use_motion_context
+            and isinstance(prev_motion_meta, dict)
+            and not motion_meta_usable(prev_motion_meta)
+        ):
+            # A stale/corrupt motion handoff carries slowed trim coordinates; it
+            # must not be reinterpreted on the real clock. Hard cut this seam.
+            use_motion_context = False
+            reports.append(
+                f"Seg #{seg.index + 1}: 上一段 motion 元数据不完整，本缝改为硬切"
+            )
+            log.warning(
+                "Director continuity: seg #%d prev motion meta unusable (%s); hard cut.",
+                seg.index + 1,
+                sorted(k for k in prev_motion_meta if k != "hold_map"),
+            )
         # Exact-export pin policy (decided before the sample budget):
         # a phase-aligned latent pin can end before the previous export end; the
         # old path trimmed those gap frames from the previous export (frame +
@@ -1155,44 +1246,42 @@ def execute_director_plan_core(
             )
         if use_motion_context and motion_plan is not None:
             d = max(1, int(motion_plan.get("dilate") or 1))
-            planned = int(motion_plan.get("pin_window") or 0)
             avail_slowed = (
                 int(prev_tail.shape[0]) * d if prev_tail is not None else 0
             )
-            preferred = snap_context_frames(plan.continuity_overlap_frames)
-            window = None
-            if preferred % d == 0 and preferred <= avail_slowed:
-                window = int(preferred)
-            if window is None:
-                window = (
-                    pin_window_for_available(avail_slowed, d, min_real=1)
-                    if planned
-                    else None
-                )
-                if window and planned:
-                    window = min(int(window), int(planned))
-            if not window:
+            _pin = select_pin_window(
+                preferred=snap_context_frames(plan.continuity_overlap_frames),
+                dilate=d,
+                available_slowed=avail_slowed,
+                planned=int(motion_plan.get("pin_window") or 0),
+            )
+            if not _pin.window:
                 use_motion_context = False
                 reports.append(
                     f"Seg #{seg.index + 1}: dilate={d} 无可用合法衔接窗口"
                     "（5/22/39/56 且能整除/有上一段帧），本缝改为硬切"
                 )
             elif prev_tail is not None:
-                real_tail_n = max(1, int(window) // d)
-                tail = prev_tail[-real_tail_n:]
+                tail = prev_tail[-max(1, _pin.real_frames):]
                 expanded, _holds = expand_frames_with_holds(
                     tail, [d] * int(tail.shape[0])
                 )
-                if int(expanded.shape[0]) != int(window):
+                if int(expanded.shape[0]) != int(_pin.window):
                     use_motion_context = False
                     reports.append(
                         f"Seg #{seg.index + 1}: 钉入展开长度不符，本缝改为硬切"
                     )
                 else:
-                    motion_pin_window = int(window)
+                    motion_pin_window = int(_pin.window)
                     motion_pin_frames = expanded.to(
                         device=clip_frames.device, dtype=clip_frames.dtype
                     )
+                    if _pin.promoted:
+                        reports.append(
+                            f"Seg #{seg.index + 1}: 上下文 {_pin.preferred}f 与倍率 {d} "
+                            f"不对齐，钉入窗口取 {int(_pin.window)}f（实时重叠 "
+                            f"{_pin.real_frames}f）"
+                        )
         elif use_motion_context and prev_motion_meta is None:
             # Both sides real-time: keep the zero-encode latent pin only when the
             # phase gap is zero; otherwise re-encode the previous export tail.
@@ -1363,18 +1452,26 @@ def execute_director_plan_core(
                         pin_context_frames = motion_pin_frames
                         pin_context_length = int(motion_pin_window)
                         d = max(1, int(motion_plan.get("dilate") or 1))
-                        if prev_motion_meta is not None and prev_av is not None:
-                            # Both slowed: slice the previous slowed AV latent audio.
+                        _audio = decide_pin_audio(
+                            prev_motion_meta=prev_motion_meta,
+                            has_prev_av=prev_av is not None,
+                            has_prev_audio=pin_context_audio is not None,
+                            dilate=d,
+                            pin_window=int(motion_pin_window),
+                        )
+                        if _audio.note:
+                            reports.append(f"Seg #{seg.index + 1}: {_audio.note}")
+                        if _audio.source == "latent":
+                            # Same dilation: slice the previous slowed AV latent.
                             pin_audio_context_latent = prev_av
-                        else:
-                            # Prev real-time (any audio mode): expand its tail ×d so
-                            # the pin matches the slowed clock.
+                            pin_audio_length = int(_audio.slowed_frames)
+                        elif _audio.source == "expand":
+                            # Prev real-time, or a different dilation: repeat the
+                            # previous real-time audio tail ×d over the pin window.
                             slowed_audio, slowed_n = expand_audio_for_slowed_pin(
                                 pin_context_audio,
                                 dilate=d,
-                                slowed_frames=snap_context_frames(
-                                    plan.continuity_overlap_frames
-                                ),
+                                slowed_frames=int(_audio.slowed_frames),
                                 fps=float(plan.frame_rate or 24),
                             )
                             if slowed_audio is not None and slowed_n > 0:
@@ -1397,6 +1494,8 @@ def execute_director_plan_core(
                                     f"Seg #{seg.index + 1}: 无可展开的上一段音频，"
                                     "音频不钉入（视频照常钉入）"
                                 )
+                        else:  # none
+                            pin_audio = False
                 else:
                     if prev_tail is None or int(prev_tail.shape[0]) < 1:
                         use_motion_context = False
@@ -1659,7 +1758,7 @@ def execute_director_plan_core(
                     visible_frames=num_frames,
                     target_len=target_len,
                     keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
-                    exact=bool(getattr(plan, "exact_export", True)),
+                    exact=bool(getattr(plan, "exact_export", False)),
                 )
             reports.append(
                 f"Seg #{seg.index + 1}: continuity {handoff_label} — "
@@ -1865,7 +1964,7 @@ def execute_director_plan_core(
                 visible_frames=num_frames,
                 target_len=target_len,
                 keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
-                exact=bool(getattr(plan, "exact_export", True)),
+                exact=bool(getattr(plan, "exact_export", False)),
             )
         refine_handoff = {
             "trim_frames": int(trim_frames),
@@ -1992,7 +2091,12 @@ def execute_director_plan_core(
                 first_pass_images=upscale_frames,
                 # Motion segments keep their pin outside refine; the slowed
                 # latent must not be re-pinned from a real-time prev latent.
+                # Continue mode still re-installs its prefix lock on the second
+                # sample (the slowed prefix is already in the latent).
                 trim_frames=0 if motion_plan is not None else trim_frames,
+                motion_keep_prefix_lock=bool(
+                    motion_plan is not None and is_continue_mode(plan)
+                ),
                 on_pass=_export_refine_pass if mp4_run_dir is not None else None,
                 # Mixed timebase (prev slowed, this segment real-time): never
                 # re-pin from the slowed latent; slice this clip's real head or
@@ -2076,7 +2180,7 @@ def execute_director_plan_core(
                 visible_frames=num_frames,
                 target_len=target_len,
                 keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
-                exact=bool(getattr(plan, "exact_export", True)),
+                exact=bool(getattr(plan, "exact_export", False)),
             )
             decoded, audio_dict = _trim_decoded_to_export(
                 decoded,

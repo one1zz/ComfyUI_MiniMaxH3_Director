@@ -429,6 +429,8 @@ def _group_json(seg: dict) -> dict:
         "refVideos": seg.get("refVideos") or seg.get("ref_videos") or [],
         "continuityFromPrev": seg.get("continuityFromPrev", seg.get("continuity_from_prev")),
         "refImageSize": seg.get("refImageSize") or seg.get("ref_image_size"),
+        "motionFix": bool(seg.get("motionFix", seg.get("motion_fix", False))),
+        "motionDilate": seg.get("motionDilate", seg.get("motion_dilate", 0)),
     }
     if isinstance(seg.get("genImage"), dict):
         out["genImage"] = {
@@ -807,6 +809,8 @@ def _assemble_timeline(extracted: Path, pack_meta: dict) -> dict:
             "refVideos": _merge_refs(raw.get("refVideos") or raw.get("ref_videos"), scanned["refVideos"]),
             "continuityFromPrev": raw.get("continuityFromPrev", raw.get("continuity_from_prev")),
             "refImageSize": raw.get("refImageSize") or raw.get("ref_image_size"),
+            "motionFix": bool(raw.get("motionFix", raw.get("motion_fix", False))),
+            "motionDilate": raw.get("motionDilate", raw.get("motion_dilate", 0)),
             "genImage": gen or {"imageFile": ""},
             "imageFile": (gen or {}).get("imageFile") or raw.get("imageFile") or "",
             "startImage": start_img,

@@ -603,8 +603,8 @@ def build_plan_from_external_groups(
         concat_common_segment_prompt,
         merge_indexed_refs,
         drop_unusable_audio_prompt_tags,
+        exact_export_setting,
         reinforce_r2v_prompt,
-        resolve_exact_export,
         resolve_ref_pad_to_grid,
         resolve_segment_motion_fix,
         usable_ref_audio_indices,
@@ -739,6 +739,9 @@ def build_plan_from_external_groups(
             row = timeline_row_for_index(timeline, int(src_index))
             if not row and isinstance(g, dict):
                 row = g
+            _motion_enabled, _motion_dilate = resolve_segment_motion_fix(
+                row if isinstance(row, dict) else g
+            )
             segments.append(
                 SegmentPlan(
                     index=plan_idx,
@@ -756,12 +759,8 @@ def build_plan_from_external_groups(
                         row, segment_index=plan_idx
                     ),
                     ref_image_size=_resolve_group_ref_image_size(g, row, timeline),
-                    motion_fix_enabled=resolve_segment_motion_fix(
-                        row if isinstance(row, dict) else g
-                    )[0],
-                    motion_dilate=resolve_segment_motion_fix(
-                        row if isinstance(row, dict) else g
-                    )[1],
+                    motion_fix_enabled=_motion_enabled,
+                    motion_dilate=_motion_dilate,
                 )
             )
         else:
@@ -813,6 +812,9 @@ def build_plan_from_external_groups(
             row = timeline_row_for_index(timeline, int(src_index))
             if not row and isinstance(g, dict):
                 row = g
+            _motion_enabled, _motion_dilate = resolve_segment_motion_fix(
+                row if isinstance(row, dict) else g
+            )
             segments.append(
                 SegmentPlan(
                     index=plan_idx,
@@ -832,12 +834,8 @@ def build_plan_from_external_groups(
                         row, segment_index=plan_idx
                     ),
                     ref_image_size=_resolve_group_ref_image_size(g, row, timeline),
-                    motion_fix_enabled=resolve_segment_motion_fix(
-                        row if isinstance(row, dict) else g
-                    )[0],
-                    motion_dilate=resolve_segment_motion_fix(
-                        row if isinstance(row, dict) else g
-                    )[1],
+                    motion_fix_enabled=_motion_enabled,
+                    motion_dilate=_motion_dilate,
                 )
             )
 
@@ -873,6 +871,9 @@ def build_plan_from_external_groups(
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
     continuity_keep_tail = resolve_continuity_keep_tail(timeline)
+    _exact_value, _exact_explicit = exact_export_setting(
+        timeline.get("output"), continuity_enabled=continuity_enabled
+    )
 
     plan = DirectorPlan(
         frame_rate=fps,
@@ -898,7 +899,8 @@ def build_plan_from_external_groups(
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
-        exact_export=resolve_exact_export(timeline.get("output")),
+        exact_export=_exact_value,
+        exact_export_explicit=_exact_explicit,
         ref_pad_to_grid=resolve_ref_pad_to_grid(timeline.get("output")),
         global_ref_audios=list(common_audios_raw) if family == "r2v" else [],
     )

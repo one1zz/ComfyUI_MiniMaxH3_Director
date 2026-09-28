@@ -381,8 +381,8 @@ def build_gen_director_plan(
         _parse_run_selection,
         _resolve_export_mode,
         concat_common_segment_prompt,
+        exact_export_setting,
         merge_indexed_refs,
-        resolve_exact_export,
         resolve_ref_pad_to_grid,
         resolve_ref_image_size,
         resolve_segment_motion_fix,
@@ -641,6 +641,9 @@ def build_gen_director_plan(
         else:
             seg_source = source_clips[idx].clone() if idx < len(source_clips) else None
 
+        _motion_enabled, _motion_dilate = resolve_segment_motion_fix(
+            seg_data if isinstance(seg_data, dict) else {}
+        )
         segments.append(
             SegmentPlan(
                 index=idx,
@@ -663,12 +666,8 @@ def build_gen_director_plan(
                     seg_data if isinstance(seg_data, dict) else {},
                     timeline,
                 ),
-                motion_fix_enabled=resolve_segment_motion_fix(
-                    seg_data if isinstance(seg_data, dict) else {}
-                )[0],
-                motion_dilate=resolve_segment_motion_fix(
-                    seg_data if isinstance(seg_data, dict) else {}
-                )[1],
+                motion_fix_enabled=_motion_enabled,
+                motion_dilate=_motion_dilate,
             )
         )
 
@@ -695,6 +694,9 @@ def build_gen_director_plan(
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
     continuity_keep_tail = resolve_continuity_keep_tail(timeline)
+    _exact_value, _exact_explicit = exact_export_setting(
+        output_block, continuity_enabled=continuity_enabled
+    )
 
     return DirectorPlan(
         frame_rate=fps,
@@ -720,7 +722,8 @@ def build_gen_director_plan(
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
         continuity_keep_tail=continuity_keep_tail,
-        exact_export=resolve_exact_export(output_block),
+        exact_export=_exact_value,
+        exact_export_explicit=_exact_explicit,
         ref_pad_to_grid=resolve_ref_pad_to_grid(output_block),
         global_ref_audios=shared_ref_audios,
     )
