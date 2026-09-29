@@ -628,6 +628,32 @@ async def minimax_list_segment_runs(request):
         return web.json_response({"error": str(exc)}, status=400)
 
 
+async def minimax_join_segments(request):
+    """One-click lossless join of a segment-export run (empty dir = newest)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    directory = str(body.get("directory") or "").strip()
+    files_text = str(body.get("files") or "")
+    output_name = str(body.get("output_name") or "director_joined")
+    output_dir = str(body.get("output_dir") or "").strip()
+    try:
+        from .segment_join import join_from_spec
+
+        result = await asyncio.to_thread(
+            join_from_spec,
+            directory,
+            files_text,
+            output_name,
+            output_dir,
+        )
+        return web.json_response(result)
+    except Exception as exc:
+        log.warning("MiniMax H3 Director join segments failed: %s", exc)
+        return web.json_response({"error": str(exc)}, status=400)
+
+
 def _register_route(routes, method: str, path: str, handler) -> None:
     if hasattr(routes, "add_route"):
         routes.add_route(method, path, handler)
@@ -685,6 +711,12 @@ def register_routes() -> bool:
         "POST",
         "/minimax/director/list_segment_runs",
         minimax_list_segment_runs,
+    )
+    _register_route(
+        routes,
+        "POST",
+        "/minimax/director/join_segments",
+        minimax_join_segments,
     )
     from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
 

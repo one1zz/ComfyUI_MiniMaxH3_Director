@@ -31,9 +31,10 @@ class MiniMaxH3DirectorJoinSegments:
                         "default": "",
                         "multiline": False,
                         "tooltip": (
-                            "分段导出目录（含 seg_XXXX.mp4）。可填父目录 "
-                            "minimax_seg_export（取最新一次），留空取全局最新。"
-                            "上方列表选择了文件时忽略此项。"
+                            "分段导出目录（含 seg_XXXX.mp4）。留空 = 取最新一次"
+                            "分段导出（推荐，一键）。也可填父目录 "
+                            "minimax_seg_export（取最新一次）。"
+                            "高级：files 非空时忽略此项。"
                         ),
                     },
                 ),
@@ -44,8 +45,8 @@ class MiniMaxH3DirectorJoinSegments:
                         "multiline": True,
                         "dynamicPrompts": False,
                         "tooltip": (
-                            "手动顺序（每行一个绝对路径，顺序即拼接顺序）。"
-                            "上方的拖拽列表会自动写入这里；两者同时存在时以此为准。"
+                            "高级：手动顺序（每行一个绝对路径，顺序即拼接顺序）。"
+                            "留空则用目录里的 seg_XXXX.mp4；两者同时存在时以此为准。"
                         ),
                     },
                 ),
@@ -77,11 +78,12 @@ class MiniMaxH3DirectorJoinSegments:
     FUNCTION = "join"
     CATEGORY = _CATEGORY
     DESCRIPTION = (
-        "Losslessly join MiniMax H3 Director segment exports (any historical run). "
-        "Video: -c:v copy. Audio: PCM rebuilt from seg_*.wav or director_timeline.wav "
-        "(no AAC priming clicks). Accepts an ordered file list from the drag-and-drop "
-        "picker, or a directory. Returns the joined path and a report with a duration "
-        "sanity check."
+        "Losslessly join MiniMax H3 Director segment exports. Queue it with all "
+        "inputs left empty to join the newest segment-export run (one-click). "
+        "Video: -c:v copy. Audio: PCM rebuilt from seg_*.wav or "
+        "director_timeline.wav (no AAC priming clicks). Optional directory / "
+        "ordered file list override the auto pick. Returns the joined path and a "
+        "report with a duration sanity check."
     )
 
     def join(self, directory="", files="", output_name="director_joined", output_dir=""):

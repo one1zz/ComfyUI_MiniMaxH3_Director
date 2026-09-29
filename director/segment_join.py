@@ -102,6 +102,12 @@ def latest_run_dir() -> Path | None:
     return Path(runs[0]["dir"]) if runs else None
 
 
+def latest_run_summary() -> dict[str, Any] | None:
+    """Newest run's summary dict (dir/name/count/...), or None when none exists."""
+    runs = list_segment_runs(limit=1)
+    return runs[0] if runs else None
+
+
 def resolve_run_dir(raw: str | Path | None) -> Path:
     """Resolve a path to a concrete run dir (empty = newest run overall)."""
     text = str(raw or "").strip()

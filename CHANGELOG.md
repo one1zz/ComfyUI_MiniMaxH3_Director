@@ -23,6 +23,12 @@
 - 合并 `apply_motion_context` / `apply_latent_continue` 的跨时基音频分支。
 - 新增 `tests/`（pytest）与 `run_tests.py`（跨平台入口，见下）。
 
+### 分段拼接节点（一键出片）
+- 新增后端路由 `POST /minimax/director/join_segments`（`asyncio.to_thread` 执行，返回输出路径/报告）。
+- 节点默认空输入即拼**最新一次**分段导出；节点内新增「▶ 一键拼接最新分段」按钮，点击即时写出 mp4 并显示路径。
+- 原「目录/勾选/拖拽排序」收入默认收起的「高级」，并加「拼接所选/列表」按钮。
+- ffmpeg 继续走 `imageio-ffmpeg`（requirements 已有），无需系统 ffmpeg。
+
 ### 未决 / 后续
 - 放大二采 + 引导+重绘：前缀硬锁不保留（会提示）。
 - SelfLift 与动作修复组合：按“明确降级”处理（会提示）。

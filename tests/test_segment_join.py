@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import wave
 from pathlib import Path
 
@@ -109,3 +110,29 @@ def test_resolve_run_dir_accepts_parent_or_run(tmp_path):
     _run_dir(run, n=1)
     assert sj.resolve_run_dir(run) == run
     assert sj.resolve_run_dir(tmp_path) == run
+
+
+def test_latest_run_summary_and_resolve_empty(tmp_path, monkeypatch):
+    import folder_paths
+
+    monkeypatch.setattr(folder_paths, "get_output_directory", lambda: str(tmp_path))
+    base = tmp_path / "minimax_seg_export"
+    for name, mtime in (("older", 1000), ("newer", 2000)):
+        d = base / name
+        d.mkdir(parents=True)
+        (d / "seg_0000.mp4").write_bytes(b"x")
+        os.utime(d, (mtime, mtime))
+
+    summary = sj.latest_run_summary()
+    assert summary is not None and summary["name"] == "newer"
+    assert sj.resolve_run_dir("") == base / "newer"
+    assert [r["name"] for r in sj.list_segment_runs()] == ["newer", "older"]
+
+
+def test_latest_run_summary_none_when_empty(tmp_path, monkeypatch):
+    import folder_paths
+
+    monkeypatch.setattr(folder_paths, "get_output_directory", lambda: str(tmp_path))
+    assert sj.latest_run_summary() is None
+    with pytest.raises(RuntimeError):
+        sj.resolve_run_dir("")

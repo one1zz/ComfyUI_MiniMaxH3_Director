@@ -188,66 +188,124 @@ function loadRunIntoList(node, ui, dir) {
     setStatus(ui, t("joinNode.loaded", { n: ui.ordered.length }), "ok");
 }
 
+function widgetByName(node, name) {
+    return node?.widgets?.find((w) => w?.name === name);
+}
+
+function widgetStr(node, name, fallback = "") {
+    const v = widgetByName(node, name)?.value;
+    if (v == null || v === "") return fallback;
+    return String(v);
+}
+
+async function joinNow(node, ui, { selection = false } = {}) {
+    const payload = {
+        output_name: widgetStr(node, "output_name", "director_joined"),
+        output_dir: widgetStr(node, "output_dir", ""),
+    };
+    if (selection) {
+        const files = filesWidget(node)?.value ?? "";
+        if (String(files).trim()) {
+            payload.files = files;
+        } else if (ui.runSel?.value) {
+            payload.directory = ui.runSel.value;
+        }
+    }
+    setStatus(ui, t("joinNode.joining"), "");
+    if (ui.oneClickBtn) ui.oneClickBtn.disabled = true;
+    if (ui.joinSelBtn) ui.joinSelBtn.disabled = true;
+    try {
+        const resp = await api.fetchApi("/minimax/director/join_segments", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data?.error) {
+            throw new Error(data?.error || `HTTP ${resp.status}`);
+        }
+        ui.lastOutput = String(data.output || "");
+        setStatus(ui, t("joinNode.done", { path: ui.lastOutput }), "ok");
+    } catch (err) {
+        setStatus(ui, t("joinNode.joinFailed", { err: err?.message || err }), "err");
+    } finally {
+        if (ui.oneClickBtn) ui.oneClickBtn.disabled = false;
+        if (ui.joinSelBtn) ui.joinSelBtn.disabled = false;
+    }
+}
+
 function buildJoinUI(node) {
     if (node._mmxJoinUI || typeof node.addDOMWidget !== "function") return;
     const root = document.createElement("div");
     root.style.cssText = "display:flex;flex-direction:column;gap:4px;padding:2px;font-size:11px;color:#9ab;";
 
-    const head = document.createElement("div");
-    head.style.cssText = "display:flex;gap:4px;align-items:center;flex-wrap:wrap";
-    head.innerHTML = `<b>${escapeHtml(t("joinNode.title"))}</b>`;
+    // ── One-click row ────────────────────────────────────────────────
+    const primary = document.createElement("div");
+    primary.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap";
+    primary.innerHTML = `<b>${escapeHtml(t("joinNode.title"))}</b>`;
+    const oneClickBtn = document.createElement("button");
+    oneClickBtn.type = "button";
+    oneClickBtn.className = "bd-btn bd-join-oneclick";
+    oneClickBtn.textContent = t("joinNode.oneClick");
+    oneClickBtn.style.cssText = "padding:4px 10px;font-weight:600";
+    primary.appendChild(oneClickBtn);
+    root.appendChild(primary);
 
+    const statusEl = document.createElement("div");
+    statusEl.style.cssText = "color:#9ab;min-height:14px;user-select:text;word-break:break-all";
+    statusEl.textContent = t("joinNode.hint");
+    root.appendChild(statusEl);
+
+    // ── Advanced (collapsed by default) ──────────────────────────────
+    const advanced = document.createElement("details");
+    advanced.style.cssText = "border-top:1px solid #333;padding-top:4px";
+    const summary = document.createElement("summary");
+    summary.style.cssText = "cursor:pointer;color:#8fb;user-select:none";
+    summary.textContent = t("joinNode.advanced");
+    advanced.appendChild(summary);
+
+    const head = document.createElement("div");
+    head.style.cssText = "display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:4px";
     const runSel = document.createElement("select");
     runSel.className = "bd-select";
     runSel.style.cssText = "max-width:210px;flex:1";
     head.appendChild(runSel);
 
-    const mkBtn = (key, cls) => {
+    const mkBtn = (key, cls, parent = head) => {
         const b = document.createElement("button");
         b.type = "button";
         b.className = `bd-btn ${cls}`;
         b.textContent = t(key);
-        head.appendChild(b);
+        parent.appendChild(b);
         return b;
     };
     const loadBtn = mkBtn("joinNode.load", "bd-join-load");
     const refreshBtn = mkBtn("joinNode.refresh", "bd-join-refresh");
-    root.appendChild(head);
+    const joinSelBtn = mkBtn("joinNode.joinSelected", "bd-join-selected");
+    advanced.appendChild(head);
 
     const tools = document.createElement("div");
-    tools.style.cssText = "display:flex;gap:4px;align-items:center;flex-wrap:wrap";
-    root.appendChild(tools);
-    const mkTool = (key, cls) => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = `bd-btn ${cls}`;
-        b.textContent = t(key);
-        tools.appendChild(b);
-        return b;
-    };
-    const allBtn = mkTool("joinNode.selectAll", "bd-join-all");
-    const noneBtn = mkTool("joinNode.selectNone", "bd-join-none");
-    const upBtn = mkTool("joinNode.up", "bd-join-up");
-    const downBtn = mkTool("joinNode.down", "bd-join-down");
-    const removeBtn = mkTool("joinNode.remove", "bd-join-remove");
-    const clearBtn = mkTool("joinNode.clear", "bd-join-clear");
-    const textBtn = mkTool("joinNode.fromText", "bd-join-from-text");
+    tools.style.cssText = "display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:4px";
+    advanced.appendChild(tools);
+    const allBtn = mkBtn("joinNode.selectAll", "bd-join-all", tools);
+    const noneBtn = mkBtn("joinNode.selectNone", "bd-join-none", tools);
+    const upBtn = mkBtn("joinNode.up", "bd-join-up", tools);
+    const downBtn = mkBtn("joinNode.down", "bd-join-down", tools);
+    const removeBtn = mkBtn("joinNode.remove", "bd-join-remove", tools);
+    const clearBtn = mkBtn("joinNode.clear", "bd-join-clear", tools);
+    const textBtn = mkBtn("joinNode.fromText", "bd-join-from-text", tools);
 
     const listEl = document.createElement("div");
     listEl.style.cssText = [
-        "min-height:90px", "max-height:220px", "overflow:auto",
+        "min-height:90px", "max-height:220px", "overflow:auto", "margin-top:4px",
         "border:1px solid #333", "border-radius:4px", "background:#141414",
     ].join(";");
-    root.appendChild(listEl);
-
-    const statusEl = document.createElement("div");
-    statusEl.style.cssText = "color:#9ab;min-height:14px";
-    statusEl.textContent = t("joinNode.hint");
-    root.appendChild(statusEl);
+    advanced.appendChild(listEl);
+    root.appendChild(advanced);
 
     const ui = {
-        root, runSel, listEl, statusEl,
-        ordered: [], selected: -1, dragFrom: null, runs: [],
+        root, runSel, listEl, statusEl, advanced, oneClickBtn, joinSelBtn,
+        ordered: [], selected: -1, dragFrom: null, runs: [], lastOutput: "",
     };
     ui.widget = node.addDOMWidget(WIDGET_NAME, "join_file_picker", root, {
         hideOnZoom: false,
@@ -260,6 +318,14 @@ function buildJoinUI(node) {
     }
     node._mmxJoinUI = ui;
 
+    oneClickBtn.onclick = (event) => {
+        event.preventDefault();
+        void joinNow(node, ui, { selection: false });
+    };
+    joinSelBtn.onclick = (event) => {
+        event.preventDefault();
+        void joinNow(node, ui, { selection: true });
+    };
     runSel.onchange = () => loadRunIntoList(node, ui, runSel.value);
     loadBtn.onclick = (event) => {
         event.preventDefault();
