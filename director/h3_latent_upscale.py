@@ -20,6 +20,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .h3_latent_chunk import chunk_plan
+
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.h3_latent_upscale")
 
 LATENT_UPSCALE_FOLDER = "latent_upscale_models"
@@ -208,17 +210,30 @@ class LatentResizer3D(nn.Module):
             return x
 
         b, c, t = x.shape[0], x.shape[1], x.shape[2]
-        chunk = 24
         overlap = self._temporal_kernel()
+        # Adaptive, H3-grid-aligned chunk (see h3_latent_chunk); 0 = do not split.
+        plan = chunk_plan(t, overlap) if enable_chunking else {"chunked": False, "chunk": 0}
+        chunk = int(plan["chunk"])
 
-        if not enable_chunking or t <= chunk:
+        if not plan["chunked"] or chunk <= 0 or t <= chunk:
+            if enable_chunking:
+                log.info(
+                    "H3 latent upscale: temporal chunking off (T=%d, overlap=%d; "
+                    "split would not lower peak memory)",
+                    t,
+                    overlap,
+                )
             return self._forward_seg(x, scale, target_size)
 
         log.info(
-            "H3 latent upscaler temporal chunking: T=%d chunk=%d overlap=%d",
+            "H3 latent upscale: temporal chunking T=%d → chunk=%d×%d overlap=%d "
+            "segment=%d grid_aligned=%s (adaptive, H3 17k+5)",
             t,
             chunk,
+            plan["chunks"],
             overlap,
+            plan["segment"],
+            plan["grid_aligned"],
         )
         size = (int(target_size[0]), int(target_size[1]), int(target_size[2]))
         x_padded = F.pad(x, (0, 0, 0, 0, overlap, overlap), mode="replicate")

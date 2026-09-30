@@ -158,7 +158,11 @@ class MiniMaxH3DirectorSelfLift:
                     "BOOLEAN",
                     {
                         "default": False,
-                        "tooltip": "3D lift 时间分块（省显存，默认关）。接缝可能和整段前向不同。",
+                        "tooltip": (
+                            "3D lift 时间分块（省显存，默认关）。"
+                            "按片段长度自适应、对齐 H3 网格（17k+5 像素）切成均衡两段；"
+                            "短片段自动退回整段。接缝可能和整段前向不同。"
+                        ),
                     },
                 ),
                 "bd_grp_selflift_tile": ("BDGROUP", {"default": "高清分块"}),
