@@ -64,6 +64,7 @@ from .h3_motion_context import (
     apply_motion_context,
     continuity_export_len,
     describe_pin_window,
+    describe_pixel_pin_window,
     generation_frame_budget,
     handoff_end_frame,
     select_continuity_pin_latent,
@@ -291,7 +292,7 @@ def _predict_pin_gap(
         if steps is None:
             return None
         _start, _pin_end, gap = _phase_aligned_tail_start(
-            total, steps, int(prev_end_frame)
+            total, steps, int(prev_end_frame), announce=False
         )
         return int(gap)
     except Exception:
@@ -1428,11 +1429,14 @@ def execute_director_plan_core(
                 pin_context_frames = prev_tail
                 pin_context_length = int(context_n)
                 pin_context_end = None
+                _tail_len = int(pin_context_frames.shape[0])
                 log.info(
-                    "Director continuity: seg #%d pixel re-encode pin (%df, "
-                    "no prev-export trim)",
+                    "Director continuity: seg #%d pixel re-encode pin: prev export "
+                    "last %df [%d:%d), no prev-export trim",
                     seg.index + 1,
                     context_n,
+                    max(0, _tail_len - context_n),
+                    _tail_len,
                 )
             elif motion_plan is not None or prev_motion_meta is not None:
                 # Timebase conversion across a retimed boundary: pin from decoded
@@ -1737,11 +1741,16 @@ def execute_director_plan_core(
                     )
             handoff_label = "guide+redraw" if is_continue_mode(plan) else "guide"
             task_hint = f"{task_hint} + {handoff_label} {trim_frames}f"
-            pin_note = (
-                ""
-                if (motion_plan is not None or prev_motion_meta is not None)
-                else describe_pin_window(prev_av, trim_frames, end_frame=prev_end_frame)
-            )
+            if motion_plan is not None or prev_motion_meta is not None:
+                pin_note = ""
+            elif pixel_pin_real:
+                # Gapped seam: report the real pinned window (prev export tail),
+                # not the phase-aligned prediction that the pixel path never uses.
+                pin_note = describe_pixel_pin_window(prev_tail, trim_frames)
+            else:
+                pin_note = describe_pin_window(
+                    prev_av, trim_frames, end_frame=prev_end_frame
+                )
             if pin_note:
                 reports.append(f"Seg #{seg.index + 1}: {pin_note}")
             remask_note = (

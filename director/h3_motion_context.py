@@ -200,7 +200,11 @@ def _resize_frames(image: torch.Tensor, width: int, height: int) -> torch.Tensor
 
 
 def _phase_aligned_tail_start(
-    total_steps: int, n_steps: int, end_frame: int | None
+    total_steps: int,
+    n_steps: int,
+    end_frame: int | None,
+    *,
+    announce: bool = True,
 ) -> tuple[int, int, int]:
     """Pick a 5-cycle-aligned step start whose pixel window ends at/before ``end_frame``.
 
@@ -211,6 +215,10 @@ def _phase_aligned_tail_start(
     segment is never pinned into the next clip. ``gap_after_pin`` is how many
     exported frames sit *after* the pin window — those must be dropped from the
     previous export before concat, or the next clip's opening will echo them.
+
+    ``announce=False`` keeps this side-effect free for callers that only *predict*
+    the window (a gapped seam switches to a pixel re-encode pin that never trims
+    the previous export, so the "will be trimmed" line would be wrong there).
     """
     if n_steps > total_steps:
         raise ValueError(
@@ -240,7 +248,7 @@ def _phase_aligned_tail_start(
             f"at or before frame {end_limit}."
         )
     gap = max(0, end_limit - best_end_px)
-    if gap > 0:
+    if gap > 0 and announce:
         log.info(
             "Director continuity: pin window ends %df before export end "
             "(phase align; export_end=%d, pin_end=%d) — prev export tail will be trimmed",
@@ -287,7 +295,9 @@ def describe_pin_window(
         steps = steps_for_frames(int(n_frames))
         if steps is None:
             return ""
-        start, pin_end_px, _gap = _phase_aligned_tail_start(total, steps, end_frame)
+        start, pin_end_px, _gap = _phase_aligned_tail_start(
+            total, steps, end_frame, announce=False
+        )
         return (
             f"pin window: prev frames [{pixel_frames_for_latent_t(start)}:{pin_end_px}) "
             f"of {pixel_frames_for_latent_t(total)} "
@@ -295,6 +305,26 @@ def describe_pin_window(
         )
     except Exception as exc:  # report-only — never break the run
         return f"pin window: unavailable ({exc})"
+
+
+def describe_pixel_pin_window(tail: torch.Tensor | None, n_frames: int) -> str:
+    """Run-report note for the gapped pixel re-encode pin.
+
+    This path pins the previous *export's* real last frames (ending at its own
+    end, which may be off the 17k+5 grid); it never trims the previous export.
+    Distinct from ``describe_pin_window``, whose phase-aligned window ends on a
+    latent boundary and is only a prediction when the pixel path is chosen.
+    """
+    if tail is None or int(getattr(tail, "shape", [0])[0]) < 1:
+        return ""
+    total = int(tail.shape[0])
+    n = min(int(n_frames), total)
+    if n < 1:
+        return ""
+    return (
+        f"pin window: prev export last {n}f [{total - n}:{total}) "
+        f"(pixels re-encode, no prev-export trim)"
+    )
 
 
 def copy_av_tail_into_prefix(
